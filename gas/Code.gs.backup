@@ -1,0 +1,3211 @@
+/**
+ * Ganttチャート自動生成システム - メインスクリプト
+ *
+ * このスクリプトはJSONファイルからGanttチャートを自動生成します
+ */
+
+/**
+ * スプレッドシートを開いたときにカスタムメニューを追加
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('📊 ガントチャート')
+    .addItem('🔄 すべて更新', 'menuUpdateAll')
+    .addItem('📂 Driveから再読み込み', 'menuReloadFromDrive')
+    .addSeparator()
+    .addItem('📊 ガントチャート更新', 'menuUpdateGantt')
+    .addItem('📋 全タスク一覧更新', 'menuUpdateAllTasks')
+    .addItem('⚠️ 期日切れ一覧更新', 'menuUpdateOverdue')
+    .addToUi();
+}
+
+/**
+ * メニュー: すべて更新
+ */
+function menuUpdateAll() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    menuUpdateGantt();
+    menuUpdateAllTasks();
+    menuUpdateOverdue();
+    ui.alert('✅ 更新完了', 'すべてのシートを更新しました。', ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('❌ エラー', `更新中にエラーが発生しました:\n${e.message}`, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * メニュー: Driveから再読み込み
+ * Google DriveのJSONファイルを手動で読み込み、スプレッドシートに反映
+ */
+function menuReloadFromDrive() {
+  const ui = SpreadsheetApp.getUi();
+
+  // 確認ダイアログ
+  const response = ui.alert(
+    '📂 Driveから再読み込み',
+    'Google Drive上のJSONファイルを読み込み、\nスプレッドシートに反映します。\n\n処理を実行しますか？',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response !== ui.Button.YES) {
+    return;
+  }
+
+  try {
+    // checkForNewJsonFiles を手動実行
+    checkForNewJsonFiles();
+
+    ui.alert(
+      '✅ 読み込み完了',
+      'JSONファイルの読み込みが完了しました。\n\n詳細はログで確認できます。',
+      ui.ButtonSet.OK
+    );
+  } catch (e) {
+    ui.alert(
+      '❌ エラー',
+      `読み込み中にエラーが発生しました:\n${e.message}`,
+      ui.ButtonSet.OK
+    );
+  }
+}
+
+/**
+ * メニュー: ガントチャート更新
+ * 現在アクティブなシートがガントチャートシートの場合、そのシートを更新
+ */
+function menuUpdateGantt() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const activeSheet = ss.getActiveSheet();
+  const sheetName = activeSheet.getName();
+
+  // プロジェクト一覧シートからプロジェクトIDを取得
+  const projectListSheet = ss.getSheetByName(CONFIG.PROJECT_LIST_SHEET_NAME);
+  if (!projectListSheet) {
+    throw new Error('プロジェクト一覧シートが見つかりません。');
+  }
+
+  // ガントチャートシートかどうか判定（プロジェクト一覧からリンクを確認）
+  const data = projectListSheet.getDataRange().getValues();
+  let projectId = null;
+
+  for (let i = 1; i < data.length; i++) {
+    const rowProjectId = data[i][0];
+    const expectedSheetName = `${rowProjectId}_`;
+    if (sheetName.startsWith(expectedSheetName)) {
+      projectId = rowProjectId;
+      break;
+    }
+  }
+
+  if (!projectId) {
+    // アクティブシートがガントチャートでない場合、選択ダイアログを表示するか最初のプロジェクトを更新
+    SpreadsheetApp.getUi().alert('⚠️ 注意', '現在のシートはガントチャートシートではありません。\nガントチャートシートを選択してから実行してください。', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  // DriveからJSONを再読み込みしてガントチャートを更新
+  const folder = DriveApp.getFolderById(CONFIG.DRIVE_FOLDER_ID);
+  const files = folder.getFiles();
+
+  while (files.hasNext()) {
+    const file = files.next();
+    const fileName = file.getName();
+
+    if (fileName.includes(projectId) && fileName.endsWith('.json')) {
+      const content = file.getBlob().getDataAsString();
+      const projectData = JSON.parse(content);
+
+      const renderer = new GanttRenderer(activeSheet, projectData);
+      renderer.render();
+      Logger.log(`✓ ガントチャート「${sheetName}」を更新しました`);
+      return;
+    }
+  }
+
+  throw new Error(`プロジェクトID ${projectId} のJSONファイルが見つかりません。`);
+}
+
+/**
+ * メニュー: 全タスク一覧更新
+ */
+function menuUpdateAllTasks() {
+  const sheetManager = new SheetManager();
+  const folder = DriveApp.getFolderById(CONFIG.DRIVE_FOLDER_ID);
+  const files = folder.getFiles();
+
+  while (files.hasNext()) {
+    const file = files.next();
+    const fileName = file.getName();
+
+    if (fileName.endsWith('.json')) {
+      const content = file.getBlob().getDataAsString();
+      const projectData = JSON.parse(content);
+      sheetManager.updateAllTasks(projectData);
+    }
+  }
+
+  Logger.log('✓ 全タスク一覧を更新しました');
+}
+
+/**
+ * メニュー: 期日切れ一覧更新
+ */
+function menuUpdateOverdue() {
+  const sheetManager = new SheetManager();
+  sheetManager.updateOverdueTasks();
+  Logger.log('✓ 期日切れ一覧を更新しました');
+}
+
+/**
+ * プロジェクトデータからGanttチャートを生成
+ *
+ * @param {Object} projectData - プロジェクトデータ（JSON）
+ */
+function generateGanttFromData(projectData) {
+  Logger.log(`プロジェクト「${projectData.project_name}」のGanttチャート生成を開始...`);
+
+  const sheetManager = new SheetManager();
+
+  // 1. プロジェクトGanttシートを作成＆レンダリング
+  Logger.log('Ganttチャートを作成中...');
+  const ganttSheet = sheetManager.getOrCreateGanttSheet(
+    String(projectData.project_id),
+    projectData.project_name
+  );
+
+  const renderer = new GanttRenderer(ganttSheet, projectData);
+  renderer.render();
+
+  // 2. 全タスクリストを更新
+  Logger.log('全タスクリストを更新中...');
+  sheetManager.updateAllTasks(projectData);
+
+  // 3. プロジェクト一覧を更新（最後に更新してシートリンクを取得）
+  Logger.log('プロジェクト一覧を更新中...');
+  sheetManager.updateProjectList(projectData);
+
+  Logger.log('✓ すべてのシートを更新完了');
+}
+
+/**
+ * ファイル名からproject_idを抽出
+ * @param {string} fileName - ファイル名（例: "192_ポートフォリオ.json" or "processed_192_ポートフォリオ.json" or "updated_192_ポートフォリオ.json"）
+ * @return {string|null} - プロジェクトID（例: "192"）
+ */
+function extractProjectId(fileName) {
+  // processed_ または updated_ を除去
+  const nameWithoutPrefix = fileName.replace(/^(processed_|updated_)/, '');
+
+  // 最初の "_" より前を取得
+  const match = nameWithoutPrefix.match(/^(\d+)_/);
+  return match ? match[1] : null;
+}
+
+/**
+ * プロジェクト一覧シートに既存プロジェクトがあるか判定
+ * @param {string} projectId - プロジェクトID
+ * @return {boolean} - 既存プロジェクトならtrue
+ */
+function existsInProjectList(projectId) {
+  const sheetManager = new SheetManager();
+  const projectListSheet = sheetManager.ss.getSheetByName(CONFIG.PROJECT_LIST_SHEET_NAME);
+
+  if (!projectListSheet) {
+    return false;
+  }
+
+  const data = projectListSheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(projectId)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Google Driveフォルダを監視して未処理のJSONファイルを処理
+ *
+ * この関数は時間ベーストリガー（1分ごと）で自動実行されます。
+ *
+ * 処理フロー:
+ * 1. CONFIG.DRIVE_FOLDER_IDで指定されたフォルダ内のJSONファイルを検索
+ * 2. 未処理ファイル（processed_/updated_で始まらない）を処理
+ * 3. 既存プロジェクトの場合は processed_/updated_ 付きでも更新
+ * 4. 処理後、ファイル名を変更:
+ *    - 新規作成: "processed_XXXX.json"
+ *    - 既存更新: "updated_XXXX.json"
+ *
+ * トリガー設定方法:
+ * 1. Apps Scriptエディタで「トリガー」アイコンをクリック
+ * 2. 「トリガーを追加」をクリック
+ * 3. 実行する関数: checkForNewJsonFiles
+ * 4. イベントのソース: 時間主導型
+ * 5. 時間ベースのトリガーのタイプ: 分ベースのタイマー
+ * 6. 時間の間隔: 1分おき
+ */
+function checkForNewJsonFiles() {
+  try {
+    const folderId = CONFIG.DRIVE_FOLDER_ID;
+    Logger.log(`[DEBUG] フォルダID: ${folderId}`);
+
+    if (!folderId) {
+      Logger.log('⚠ CONFIG.DRIVE_FOLDER_ID が設定されていません。');
+      return;
+    }
+
+    if (folderId === 'your_folder_id_here') {
+      Logger.log('⚠ CONFIG.DRIVE_FOLDER_ID がデフォルト値のままです。実際のフォルダIDを設定してください。');
+      return;
+    }
+
+    const folder = DriveApp.getFolderById(folderId);
+    Logger.log(`[DEBUG] フォルダ名: ${folder.getName()}`);
+
+    const files = folder.getFiles();  // 全ファイルを取得
+
+    let fileCount = 0;
+    let processedCount = 0;
+
+    while (files.hasNext()) {
+      const file = files.next();
+      const fileName = file.getName();
+      const mimeType = file.getMimeType();
+      fileCount++;
+
+      Logger.log(`[DEBUG] ファイル${fileCount}: ${fileName}`);
+      Logger.log(`[DEBUG]   - MIMEタイプ: ${mimeType}`);
+      Logger.log(`[DEBUG]   - .jsonで終わる? ${fileName.endsWith('.json')}`);
+      Logger.log(`[DEBUG]   - processed/updated済み? ${fileName.startsWith('processed_') || fileName.startsWith('updated_')}`);
+
+      // JSONファイルかチェック
+      if (!fileName.endsWith('.json')) {
+        Logger.log(`⏭  スキップ（JSONではない）: ${fileName}`);
+        continue;
+      }
+
+      // project_idを抽出
+      const projectId = extractProjectId(fileName);
+      Logger.log(`[DEBUG]   - プロジェクトID: ${projectId}`);
+
+      // 処理条件:
+      // 1. processed_ または updated_ で始まらない（新規ファイル）
+      // 2. processed_ または updated_ で始まるが既存プロジェクト（更新ファイル）
+      const isProcessed = fileName.startsWith('processed_') || fileName.startsWith('updated_');
+      const isNewFile = !isProcessed;
+      const isExistingProject = projectId && existsInProjectList(projectId);
+
+      if (isNewFile || isExistingProject) {
+        // 既存プロジェクトかどうかで判定（こちらを優先）
+        if (isExistingProject) {
+          Logger.log(`✓ 既存プロジェクトの更新を検出: ${fileName}`);
+        } else {
+          Logger.log(`✓ 新しいJSONファイルを検出: ${fileName}`);
+        }
+
+        try {
+          // JSONファイルを処理
+          processJsonFile(file.getId());
+
+          // 処理成功後、ファイル名を変更
+          if (isExistingProject) {
+            // 既存プロジェクトの場合は updated_ を付ける
+            const cleanFileName = fileName.replace(/^(processed_|updated_)/, '');
+            const newFileName = 'updated_' + cleanFileName;
+            file.setName(newFileName);
+            Logger.log(`✓ 更新完了。ファイル名を変更: ${newFileName}`);
+          } else {
+            // 新規プロジェクトの場合は processed_ を付ける
+            const newFileName = 'processed_' + fileName;
+            file.setName(newFileName);
+            Logger.log(`✓ 新規作成完了。ファイル名を変更: ${newFileName}`);
+          }
+
+          processedCount++;
+        } catch (error) {
+          Logger.log(`✗ ファイル処理エラー (${fileName}): ${error.message}`);
+          Logger.log(`✗ スタックトレース: ${error.stack}`);
+          // エラーが発生してもループは続ける
+        }
+      } else {
+        Logger.log(`⏭  スキップ: ${fileName}`);
+      }
+    }
+
+    Logger.log(`[DEBUG] 検出ファイル数: ${fileCount}, 処理数: ${processedCount}`);
+
+    if (processedCount > 0) {
+      Logger.log(`✓ ${processedCount}個のファイルを処理しました。`);
+    } else {
+      Logger.log('未処理のJSONファイルはありません。');
+    }
+
+  } catch (error) {
+    Logger.log('✗ フォルダ監視エラー: ' + error.message);
+    Logger.log('✗ スタックトレース: ' + error.stack);
+    sendDiscordNotification(
+      `Google Driveフォルダの監視中にエラーが発生しました。\n\nエラー内容: ${error.message}`,
+      true
+    );
+  }
+}
+
+/**
+ * 手動でJSONファイルを指定して処理
+ *
+ * @param {string} fileId - Google DriveのファイルID
+ */
+function processJsonFile(fileId) {
+  try {
+    const file = DriveApp.getFileById(fileId);
+    const content = file.getBlob().getDataAsString();
+    const projectData = JSON.parse(content);
+
+    Logger.log(`JSONファイル「${file.getName()}」を処理中...`);
+    generateGanttFromData(projectData);
+
+    sendDiscordNotification(
+      `プロジェクト「${projectData.project_name}」のGanttチャートを生成しました。\n` +
+      `ファイル: ${file.getName()}\n` +
+      `スプレッドシート: https://docs.google.com/spreadsheets/d/${CONFIG.SPREADSHEET_ID}`
+    );
+
+  } catch (error) {
+    Logger.log('✗ エラー: ' + error);
+    sendDiscordNotification(
+      `JSONファイル処理中にエラーが発生しました。\n\nエラー内容: ${error.message}`,
+      true
+    );
+    throw error;
+  }
+}
+
+/**
+ * 実際のJSONファイルから生成（Google Driveのファイル使用）
+ *
+ * 【自動実行】
+ * - npm run gantt:save でアップロード時に自動的にprocessJsonFile()が実行されます
+ * - Apps Script APIを使用してNode.jsから直接呼び出されます
+ *
+ * 【手動実行】
+ * 1. Google DriveにJSONファイルをアップロード
+ * 2. ファイルを右クリック → 「リンクを取得」 → ファイルIDをコピー
+ * 3. 下記の FILE_ID を実際のファイルIDに書き換え
+ * 4. この関数を実行
+ *
+ * ファイルIDの例: "1a2b3c4d5e6f7g8h9i0j" （長い英数字の文字列）
+ */
+function generateGanttFromFile() {
+  const FILE_ID = 'your_file_id_here'; // ここに実際のファイルIDを入力
+
+  if (FILE_ID === 'your_file_id_here') {
+    Logger.log('⚠ FILE_ID を実際のファイルIDに書き換えてください。');
+    return;
+  }
+
+  processJsonFile(FILE_ID);
+}
+
+/**
+ * 全Ganttシートを一括再同期
+ *
+ * - 全Ganttシートからプロジェクトデータを読み取り
+ * - プロジェクト一覧、全タスクリスト、期日切れタスクを更新
+ */
+function syncAllSheets() {
+  try {
+    Logger.log('=== 全Ganttシートの一括同期を開始 ===');
+
+    const sheetManager = new SheetManager();
+    const ss = sheetManager.ss;
+    const allSheets = ss.getSheets();
+
+    // 1. 全Ganttシートを検出
+    const ganttSheets = allSheets.filter(sheet => {
+      const name = sheet.getName();
+      return name.match(/^\d{1,4}_.+$/); // "X_プロジェクト名" または "XXXX_プロジェクト名" 形式
+    });
+
+    Logger.log(`✓ Ganttシート検出: ${ganttSheets.length}件`);
+
+    if (ganttSheets.length === 0) {
+      Logger.log('⚠ Ganttシートが見つかりませんでした。');
+      return;
+    }
+
+    // 2. 各Ganttシートからデータを読み取って更新
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const ganttSheet of ganttSheets) {
+      try {
+        Logger.log(`--- ${ganttSheet.getName()} を同期中 ---`);
+
+        // Ganttシートからプロジェクトデータを読み取り
+        const projectData = sheetManager.readProjectDataFromSheet(ganttSheet);
+
+        if (!projectData) {
+          Logger.log(`⚠ データ読み取り失敗: ${ganttSheet.getName()}`);
+          errorCount++;
+          continue;
+        }
+
+        // プロジェクト一覧を更新
+        sheetManager.updateProjectList(projectData);
+
+        // 全タスクリストを更新
+        sheetManager.updateAllTasks(projectData);
+
+        // Ganttシートのステータスから進捗率を更新
+        sheetManager.updateGanttProgressFromStatus(ganttSheet);
+
+        Logger.log(`✓ 同期完了: ${ganttSheet.getName()}`);
+        successCount++;
+
+        // API制限・リソース枯渇対策：次のシート処理まで1秒待機
+        Utilities.sleep(1000);
+
+      } catch (error) {
+        Logger.log(`✗ 同期エラー (${ganttSheet.getName()}): ${error.message}`);
+        errorCount++;
+      }
+    }
+
+    // 3. 期日切れタスクシートを更新
+    Logger.log('--- 期日切れタスクシートを更新中 ---');
+    try {
+      const overdueCount = sheetManager.updateOverdueTasks();
+      Logger.log(`✓ 期日切れタスク更新完了: ${overdueCount}件`);
+    } catch (error) {
+      Logger.log(`✗ 期日切れタスク更新エラー: ${error.message}`);
+    }
+
+    Logger.log('=== 同期完了 ===');
+    Logger.log(`成功: ${successCount}件 / エラー: ${errorCount}件`);
+
+  } catch (error) {
+    Logger.log('✗ 全体エラー: ' + error.message);
+    Logger.log('✗ スタックトレース: ' + error.stack);
+    throw error;
+  }
+}
+
+/**
+ * Ganttシートをバッチ処理で同期
+ *
+ * @param {number} startIndex - 開始インデックス（0始まり）
+ * @param {number} batchSize - 処理するシート数
+ * @param {boolean} updateOverdue - 期日切れタスク更新を実行するか（デフォルト: false）
+ */
+function syncBatchSheets(startIndex, batchSize, updateOverdue = false) {
+  try {
+    Logger.log(`=== Ganttシートのバッチ同期を開始 (${startIndex}~${startIndex + batchSize - 1}) ===`);
+
+    const sheetManager = new SheetManager();
+    const ss = sheetManager.ss;
+    const allSheets = ss.getSheets();
+
+    // 1. 全Ganttシートを検出
+    const ganttSheets = allSheets.filter(sheet => {
+      const name = sheet.getName();
+      return name.match(/^\d{1,4}_.+$/); // "X_プロジェクト名" または "XXXX_プロジェクト名" 形式
+    });
+
+    Logger.log(`✓ Ganttシート検出: ${ganttSheets.length}件`);
+
+    if (ganttSheets.length === 0) {
+      Logger.log('⚠ Ganttシートが見つかりませんでした。');
+      return;
+    }
+
+    // 2. バッチ範囲を計算
+    const endIndex = Math.min(startIndex + batchSize, ganttSheets.length);
+    const batchSheets = ganttSheets.slice(startIndex, endIndex);
+
+    Logger.log(`✓ バッチ処理対象: ${batchSheets.length}件 (${startIndex}~${endIndex - 1})`);
+
+    if (batchSheets.length === 0) {
+      Logger.log('⚠ 処理対象のシートがありません。');
+      return;
+    }
+
+    // 3. 各Ganttシートからデータを読み取って更新
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const ganttSheet of batchSheets) {
+      try {
+        Logger.log(`--- ${ganttSheet.getName()} を同期中 ---`);
+
+        // Ganttシートからプロジェクトデータを読み取り
+        const projectData = sheetManager.readProjectDataFromSheet(ganttSheet);
+
+        if (!projectData) {
+          Logger.log(`⚠ データ読み取り失敗: ${ganttSheet.getName()}`);
+          errorCount++;
+          continue;
+        }
+
+        // プロジェクト一覧を更新
+        sheetManager.updateProjectList(projectData);
+
+        // 全タスクリストを更新
+        sheetManager.updateAllTasks(projectData);
+
+        // Ganttシートのステータスから進捗率を更新
+        sheetManager.updateGanttProgressFromStatus(ganttSheet);
+
+        Logger.log(`✓ 同期完了: ${ganttSheet.getName()}`);
+        successCount++;
+
+        // API制限・リソース枯渇対策：次のシート処理まで1秒待機
+        Utilities.sleep(1000);
+
+      } catch (error) {
+        Logger.log(`✗ 同期エラー (${ganttSheet.getName()}): ${error.message}`);
+        errorCount++;
+      }
+    }
+
+    // 4. 期日切れタスクシートを更新（最後のバッチのみ）
+    if (updateOverdue) {
+      Logger.log('--- 期日切れタスクシートを更新中 ---');
+      try {
+        const overdueCount = sheetManager.updateOverdueTasks();
+        Logger.log(`✓ 期日切れタスク更新完了: ${overdueCount}件`);
+      } catch (error) {
+        Logger.log(`✗ 期日切れタスク更新エラー: ${error.message}`);
+      }
+    }
+
+    Logger.log('=== バッチ同期完了 ===');
+    Logger.log(`成功: ${successCount}件 / エラー: ${errorCount}件`);
+
+  } catch (error) {
+    Logger.log('✗ バッチ全体エラー: ' + error.message);
+    Logger.log('✗ スタックトレース: ' + error.stack);
+    throw error;
+  }
+}
+
+/**
+ * バッチ1: 0-4番目のシートを同期
+ */
+function syncBatch1() {
+  syncBatchSheets(0, 5);
+}
+
+/**
+ * バッチ2: 5-9番目のシートを同期
+ */
+function syncBatch2() {
+  syncBatchSheets(5, 5);
+}
+
+/**
+ * バッチ3: 10-14番目のシートを同期
+ */
+function syncBatch3() {
+  syncBatchSheets(10, 5);
+}
+
+/**
+ * バッチ4: 15-19番目のシートを同期
+ */
+function syncBatch4() {
+  syncBatchSheets(15, 5);
+}
+
+/**
+ * バッチ5: 20番目以降のシートを同期 + 期日切れタスク更新
+ */
+function syncBatch5() {
+  syncBatchSheets(20, 5, true); // 最後のバッチのみ期日切れタスク更新
+}
+
+/**
+ * 自動継続方式のバッチ同期
+ * - プロパティサービスで進捗を保存
+ * - 前回の続きから5シートずつ処理
+ * - 全シート完了したら最初に戻る
+ * - 最後のバッチで期日切れタスク更新
+ */
+function syncNextBatch() {
+  try {
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const BATCH_SIZE = 5;
+
+    // 現在のインデックスを取得（初回は0）
+    let currentIndex = parseInt(scriptProperties.getProperty('SYNC_CURRENT_INDEX') || '0');
+
+    Logger.log(`=== 自動継続バッチ同期開始 (開始インデックス: ${currentIndex}) ===`);
+
+    const sheetManager = new SheetManager();
+    const ss = sheetManager.ss;
+    const allSheets = ss.getSheets();
+
+    // Ganttシートを検出
+    const ganttSheets = allSheets.filter(sheet => {
+      const name = sheet.getName();
+      return name.match(/^\d{1,4}_.+$/);
+    });
+
+    const totalSheets = ganttSheets.length;
+    Logger.log(`✓ 総Ganttシート数: ${totalSheets}件`);
+
+    if (totalSheets === 0) {
+      Logger.log('⚠ Ganttシートが見つかりませんでした。');
+      scriptProperties.setProperty('SYNC_CURRENT_INDEX', '0');
+      return;
+    }
+
+    // インデックスが範囲外の場合はリセット
+    if (currentIndex >= totalSheets) {
+      Logger.log('✓ 全シート処理完了。最初に戻ります。');
+      currentIndex = 0;
+    }
+
+    // バッチ範囲を計算
+    const endIndex = Math.min(currentIndex + BATCH_SIZE, totalSheets);
+    const batchSheets = ganttSheets.slice(currentIndex, endIndex);
+    const isLastBatch = endIndex >= totalSheets;
+
+    Logger.log(`✓ バッチ処理: ${batchSheets.length}件 (${currentIndex}~${endIndex - 1}) ${isLastBatch ? '[最終バッチ]' : ''}`);
+
+    // 各シートを同期
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const ganttSheet of batchSheets) {
+      try {
+        Logger.log(`--- ${ganttSheet.getName()} を同期中 ---`);
+
+        const projectData = sheetManager.readProjectDataFromSheet(ganttSheet);
+
+        if (!projectData) {
+          Logger.log(`⚠ データ読み取り失敗: ${ganttSheet.getName()}`);
+          errorCount++;
+          continue;
+        }
+
+        sheetManager.updateProjectList(projectData);
+        sheetManager.updateAllTasks(projectData);
+        sheetManager.updateGanttProgressFromStatus(ganttSheet);
+
+        Logger.log(`✓ 同期完了: ${ganttSheet.getName()}`);
+        successCount++;
+
+        Utilities.sleep(1000);
+
+      } catch (error) {
+        Logger.log(`✗ 同期エラー (${ganttSheet.getName()}): ${error.message}`);
+        errorCount++;
+      }
+    }
+
+    // 最終バッチの場合は期日切れタスク更新
+    if (isLastBatch) {
+      Logger.log('--- 期日切れタスクシートを更新中 ---');
+      try {
+        const overdueCount = sheetManager.updateOverdueTasks();
+        Logger.log(`✓ 期日切れタスク更新完了: ${overdueCount}件`);
+      } catch (error) {
+        Logger.log(`✗ 期日切れタスク更新エラー: ${error.message}`);
+      }
+    }
+
+    // 次回のインデックスを保存
+    const nextIndex = isLastBatch ? 0 : endIndex;
+    scriptProperties.setProperty('SYNC_CURRENT_INDEX', nextIndex.toString());
+
+    Logger.log('=== バッチ同期完了 ===');
+    Logger.log(`成功: ${successCount}件 / エラー: ${errorCount}件`);
+    Logger.log(`次回開始インデックス: ${nextIndex} ${isLastBatch ? '(最初に戻る)' : ''}`);
+
+  } catch (error) {
+    Logger.log('✗ バッチ全体エラー: ' + error.message);
+    Logger.log('✗ スタックトレース: ' + error.stack);
+    throw error;
+  }
+}
+
+/**
+ * 全Ganttシートを強制的に再同期
+ * （変更検知機能を削除したため、syncAllSheets()と同じ）
+ */
+function forceResyncAll() {
+  syncAllSheets();
+}
+
+/**
+ * 全Ganttシートの期日切れタスクに色付け
+ * - ステータスには一切触らない
+ * - 終了日セル（G列）のみ色付け（赤背景・黄色文字・太字）
+ * - render()を使わないので超軽量
+ */
+function updateOverdueColors() {
+  try {
+    Logger.log('=== 期日切れタスクの色付け開始 ===');
+
+    const sheetManager = new SheetManager();
+    const ss = sheetManager.ss;
+    const allSheets = ss.getSheets();
+
+    // Ganttシートを検出
+    const ganttSheets = allSheets.filter(sheet => {
+      const name = sheet.getName();
+      return name.match(/^\d{1,4}_.+$/);
+    });
+
+    Logger.log(`✓ Ganttシート検出: ${ganttSheets.length}件`);
+
+    if (ganttSheets.length === 0) {
+      Logger.log('⚠ Ganttシートが見つかりませんでした。');
+      return;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let totalColoredCells = 0;
+
+    for (const ganttSheet of ganttSheets) {
+      try {
+        // タスクデータの開始行（GanttRendererの構造: 2行目がヘッダー、4行目からタスク）
+        const lastRow = ganttSheet.getLastRow();
+        if (lastRow < 4) continue;
+
+        const taskStartRow = 4; // 固定（4行目からタスクデータ）
+
+        // タスクデータの範囲を取得
+        const taskDataRange = ganttSheet.getRange(taskStartRow, 1, lastRow - taskStartRow + 1, 9);
+        const taskData = taskDataRange.getValues();
+
+        // 全終了日セル（G列）をリセット
+        const endDateCol = ganttSheet.getRange(taskStartRow, 7, taskData.length, 1);
+        endDateCol.setBackground('#FFFFFF');
+        endDateCol.setFontColor('#000000');
+        endDateCol.setFontWeight('normal');
+
+        let coloredCount = 0;
+
+        // 各タスクをチェック
+        for (let i = 0; i < taskData.length; i++) {
+          const row = taskData[i];
+          const endDateValue = row[6]; // G列（終了日）
+          const progress = row[7]; // H列（進捗率）
+
+          // 空行はスキップ
+          if (!row[0]) continue;
+
+          // 期日切れ判定（進捗率は0.0-1.0の小数で保存されている）
+          if (endDateValue && progress !== 1) {
+            const endDate = new Date(endDateValue);
+            endDate.setHours(0, 0, 0, 0);
+
+            if (endDate < today) {
+              // 期日切れ → 色付け
+              const endDateCell = ganttSheet.getRange(taskStartRow + i, 7);
+              endDateCell.setBackground('#FF0000'); // 赤背景
+              endDateCell.setFontColor('#FFFF00'); // 黄色文字
+              endDateCell.setFontWeight('bold'); // 太字
+              coloredCount++;
+            }
+          }
+        }
+
+        if (coloredCount > 0) {
+          Logger.log(`✓ ${ganttSheet.getName()}: ${coloredCount}件の期日切れタスクに色付け`);
+        }
+        totalColoredCells += coloredCount;
+
+      } catch (error) {
+        Logger.log(`✗ 色付けエラー (${ganttSheet.getName()}): ${error.message}`);
+      }
+    }
+
+    Logger.log('=== 色付け完了 ===');
+    Logger.log(`総計: ${totalColoredCells}件の期日切れタスクに色付け`);
+
+  } catch (error) {
+    Logger.log('✗ 全体エラー: ' + error.message);
+    Logger.log('✗ スタックトレース: ' + error.stack);
+    throw error;
+  }
+}
+
+/**
+ * 期日切れタスクをDiscordに通知
+ *
+ * - 期日切れタスクシートのデータを読み取り
+ * - Discord WebhookでEmbed形式の通知を送信
+ */
+function sendOverdueTasksNotification() {
+  try {
+    const sheetManager = new SheetManager();
+    const overdueSheet = sheetManager.getOrCreateOverdueTasksSheet();
+
+    // 期日切れタスクを取得
+    const lastRow = overdueSheet.getLastRow();
+    if (lastRow <= 1) {
+      Logger.log('✓ 期日切れタスクはありません。');
+      return;
+    }
+
+    // データを読み取り（ヘッダー除く）
+    const data = overdueSheet.getRange(2, 1, lastRow - 1, 9).getValues();
+
+    // プロジェクトごとにグループ化
+    const projectGroups = {};
+    for (const row of data) {
+      const projectId = String(row[0] || '');
+      const projectName = String(row[1] || '');
+      const taskId = String(row[2] || '');
+      const parentTaskName = String(row[3] || '');
+      const childTaskName = String(row[4] || '');
+      const dueDate = row[5] || '';
+      const assignee = String(row[6] || '');
+      const daysOverdue = row[7] || 0;
+      const progress = row[8] || 0;
+
+      // タスク名を決定
+      const taskName = childTaskName || parentTaskName || taskId;
+
+      // 進捗率を正規化（0.0-1.0 → 0-100）
+      let progressPercent = 0;
+      if (typeof progress === 'number') {
+        progressPercent = progress <= 1 ? Math.round(progress * 100) : Math.round(progress);
+      }
+
+      if (!projectGroups[projectId]) {
+        projectGroups[projectId] = {
+          projectName: projectName,
+          tasks: []
+        };
+      }
+
+      projectGroups[projectId].tasks.push({
+        taskName: taskName,
+        dueDate: dueDate,
+        assignee: assignee,
+        daysOverdue: daysOverdue,
+        progress: progressPercent
+      });
+    }
+
+    // Embed形式でDiscord通知を作成
+    const embeds = [];
+
+    for (const projectId in projectGroups) {
+      const group = projectGroups[projectId];
+
+      // タスクリストをMarkdown形式で整形
+      const taskList = group.tasks
+        .slice(0, 10) // 最大10件まで
+        .map(task => {
+          const dueDateStr = task.dueDate instanceof Date
+            ? `${task.dueDate.getMonth() + 1}/${task.dueDate.getDate()}`
+            : task.dueDate;
+          return `• **${task.taskName}** (期日: ${dueDateStr}, 遅延: ${task.daysOverdue}日, 進捗: ${task.progress}%)`;
+        })
+        .join('\n');
+
+      const moreCount = group.tasks.length > 10 ? `\n... 他${group.tasks.length - 10}件` : '';
+
+      embeds.push({
+        title: `⚠️ 期日切れタスク: ${group.projectName}`,
+        description: taskList + moreCount,
+        color: 0xFF6B6B, // 赤色
+        footer: {
+          text: `合計 ${group.tasks.length}件の期日切れタスク`
+        }
+      });
+    }
+
+    if (embeds.length === 0) {
+      Logger.log('✓ 期日切れタスクはありません。');
+      return;
+    }
+
+    // Discord Webhook送信
+    const payload = { embeds: embeds };
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(CONFIG.DISCORD_WEBHOOK_URL, options);
+    Logger.log(`✓ Discord通知送信完了: ${response.getResponseCode()}`);
+
+  } catch (error) {
+    Logger.log(`✗ Discord通知エラー: ${error.message}`);
+    Logger.log(`✗ スタックトレース: ${error.stack}`);
+    throw error;
+  }
+}
+
+/**
+ * TodoistのInboxタスクを同期
+ *
+ * - Todoist REST API v2を使用してInboxタスクを取得
+ * - Todoistタスクシートに書き込み
+ */
+function syncTodoistTasks() {
+  try {
+    Logger.log('=== Todoistタスク同期開始 ===');
+
+    // 1. Todoist APIからタスクを取得
+    const apiKey = CONFIG.TODOIST_API_KEY;
+    if (!apiKey) {
+      Logger.log('⚠ TODOIST_API_KEY が設定されていません。');
+      return 0;
+    }
+
+    const url = 'https://api.todoist.com/rest/v2/tasks';
+    const options = {
+      method: 'get',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      },
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(url, options);
+    const responseCode = response.getResponseCode();
+
+    if (responseCode !== 200) {
+      Logger.log(`✗ Todoist API エラー: ${responseCode}`);
+      Logger.log(`✗ レスポンス: ${response.getContentText()}`);
+      return 0;
+    }
+
+    const allTasks = JSON.parse(response.getContentText());
+    Logger.log(`✓ Todoistタスク取得完了: ${allTasks.length}件`);
+
+    // 2. プロジェクト一覧を取得してInboxプロジェクトIDを特定
+    const projectsUrl = 'https://api.todoist.com/rest/v2/projects';
+    const projectsResponse = UrlFetchApp.fetch(projectsUrl, options);
+    const projects = JSON.parse(projectsResponse.getContentText());
+
+    let inboxProjectId = null;
+    for (const project of projects) {
+      if (project.name === 'Inbox' || project.is_inbox_project) {
+        inboxProjectId = String(project.id);
+        Logger.log(`✓ Inboxプロジェクト検出: ${inboxProjectId}`);
+        break;
+      }
+    }
+
+    if (!inboxProjectId) {
+      Logger.log('⚠ InboxプロジェクトIDが見つかりませんでした。');
+      return 0;
+    }
+
+    // 3. Inboxプロジェクトのタスクのみをフィルタリング
+    const inboxTasks = allTasks.filter(task => String(task.project_id) === inboxProjectId);
+    Logger.log(`✓ Inboxタスク抽出完了: ${inboxTasks.length}件`);
+
+    // 4. シートマネージャーを使用してタスクを更新
+    const sheetManager = new SheetManager();
+    const count = sheetManager.updateTodoistTasks(inboxTasks);
+
+    Logger.log(`✓ Todoistタスク同期完了: ${count}件`);
+    return count;
+
+  } catch (error) {
+    Logger.log(`✗ Todoistタスク同期エラー: ${error.message}`);
+    Logger.log(`✗ スタックトレース: ${error.stack}`);
+    throw error;
+  }
+}
+
+/**
+ * Todoist連携機能のテスト（開発用）
+ *
+ * 使用方法:
+ * 1. GASエディタでこの関数を選択
+ * 2. 実行ボタンをクリック
+ * 3. 以下がテストされます:
+ *    - Todoist APIからInboxタスクを取得
+ *    - Todoistタスクシートへの書き込み
+ *    - Discord通知の送信
+ */
+/**
+ * 既存シートに実績工数列を追加するマイグレーション関数
+ *
+ * 【重要】この関数は一度だけ実行してください。
+ *
+ * 処理内容:
+ * 1. 全Ganttシート（X_プロジェクト名形式）の12列目（L列）に「実績工数（h）」列を挿入
+ * 2. 全プロジェクトタスクシートの14列目（N列）に「実績工数（h）」列を挿入
+ *
+ * 使用方法:
+ * 1. GASエディタでこの関数を選択
+ * 2. 実行ボタンをクリック
+ * 3. 実行後、各シートに「実績工数（h）」列が追加されたことを確認
+ */
+function migrateExistingSheetsForActualHours() {
+  try {
+    Logger.log('=== 実績工数列マイグレーション開始 ===');
+
+    const sheetManager = new SheetManager();
+    const ss = sheetManager.ss;
+    const allSheets = ss.getSheets();
+
+    let ganttCount = 0;
+    let errorCount = 0;
+
+    // 1. 全Ganttシートを処理
+    Logger.log('--- Ganttシートを処理中 ---');
+
+    for (const sheet of allSheets) {
+      const sheetName = sheet.getName();
+
+      // Ganttシート（X_プロジェクト名 または XXXX_プロジェクト名形式）を検出
+      if (sheetName.match(/^\d{1,4}_.+$/)) {
+        try {
+          Logger.log(`処理中: ${sheetName}`);
+
+          // 2行目（ヘッダー行）の12列目（L列）の値を確認
+          const currentHeader = sheet.getRange(2, 12).getValue();
+
+          // すでに「実績工数（h）」がある場合はスキップ
+          if (currentHeader === '実績工数（h）') {
+            Logger.log(`  ⏭  スキップ（すでに実績工数列あり）: ${sheetName}`);
+            continue;
+          }
+
+          // 12列目（L列）に新しい列を挿入
+          sheet.insertColumnAfter(11); // K列の後ろに挿入
+
+          // ヘッダー行（2行目）の12列目に「実績工数（h）」を設定
+          sheet.getRange(2, 12).setValue('実績工数（h）');
+
+          // ヘッダーのスタイルを適用（他のヘッダーと同じスタイル）
+          const headerCell = sheet.getRange(2, 12);
+          headerCell.setBackground('#E8F4FD');
+          headerCell.setHorizontalAlignment('center');
+          headerCell.setVerticalAlignment('middle');
+
+          // 1行目の12列目も同じ色で塗る
+          sheet.getRange(1, 12).setBackground('#E8F4FD');
+          sheet.getRange(1, 12).setHorizontalAlignment('center');
+          sheet.getRange(1, 12).setVerticalAlignment('middle');
+
+          Logger.log(`  ✓ 完了: ${sheetName}`);
+          ganttCount++;
+
+        } catch (error) {
+          Logger.log(`  ✗ エラー (${sheetName}): ${error.message}`);
+          errorCount++;
+        }
+      }
+    }
+
+    Logger.log(`✓ Ganttシート処理完了: ${ganttCount}件`);
+
+    // 2. 全プロジェクトタスクシートを処理
+    Logger.log('--- 全プロジェクトタスクシートを処理中 ---');
+
+    const allTasksSheet = ss.getSheetByName(CONFIG.SHEET_NAMES.ALL_TASKS);
+
+    if (allTasksSheet) {
+      try {
+        // 1行目（ヘッダー行）の14列目（N列）の値を確認
+        const currentHeader = allTasksSheet.getRange(1, 14).getValue();
+
+        // すでに「実績工数（h）」がある場合はスキップ
+        if (currentHeader === '実績工数（h）') {
+          Logger.log('  ⏭  スキップ（すでに実績工数列あり）: 全プロジェクトタスク');
+        } else {
+          // 14列目（N列）に新しい列を挿入
+          allTasksSheet.insertColumnAfter(13); // M列の後ろに挿入
+
+          // ヘッダー行（1行目）の14列目に「実績工数（h）」を設定
+          allTasksSheet.getRange(1, 14).setValue('実績工数（h）');
+
+          // ヘッダーのスタイルを適用
+          const headerCell = allTasksSheet.getRange(1, 14);
+          headerCell.setBackground('#4A90E2');
+          headerCell.setFontColor('#FFFFFF');
+          headerCell.setFontWeight('bold');
+          headerCell.setHorizontalAlignment('center');
+
+          // 列幅を設定
+          allTasksSheet.setColumnWidth(14, 75);
+
+          Logger.log('  ✓ 完了: 全プロジェクトタスク');
+        }
+      } catch (error) {
+        Logger.log(`  ✗ エラー (全プロジェクトタスク): ${error.message}`);
+        errorCount++;
+      }
+    } else {
+      Logger.log('  ⚠ 全プロジェクトタスクシートが見つかりません。');
+    }
+
+    Logger.log('=== マイグレーション完了 ===');
+    Logger.log(`成功: ${ganttCount}件のGanttシート + 全タスクシート / エラー: ${errorCount}件`);
+
+    // Discord通知
+    sendDiscordNotification(
+      `✅ **実績工数列マイグレーション完了**\n\n` +
+      `Ganttシート: ${ganttCount}件\n` +
+      `全プロジェクトタスクシート: 処理済み\n` +
+      `エラー: ${errorCount}件`,
+      false
+    );
+
+  } catch (error) {
+    Logger.log('✗ マイグレーションエラー: ' + error.message);
+    Logger.log('✗ スタックトレース: ' + error.stack);
+    sendDiscordNotification(
+      `実績工数列マイグレーション中にエラーが発生しました。\n\nエラー内容: ${error.message}`,
+      true
+    );
+    throw error;
+  }
+}
+
+/**
+ * 依存タスクブロッカー検知: 遅延タスクの影響分析
+ *
+ * この関数は遅延しているタスクを検出し、それらが他のタスクに与える影響を分析します。
+ *
+ * @param {Object} projectData - プロジェクトデータ
+ * @return {Object} 分析結果
+ *   {
+ *     delayedTasks: [遅延タスクの配列],
+ *     impactedTasks: {
+ *       delayed_task_id: {
+ *         impactedTaskIds: [影響を受けるタスクIDの配列],
+ *         criticalPathLength: クリティカルパスの長さ
+ *       }
+ *     },
+ *     circularDependencies: [[循環依存タスクIDの配列], ...],
+ *     taskMap: { task_id: task_object }
+ *   }
+ */
+function analyzeDependencyImpact(projectData) {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // 時刻をリセット
+
+    const tasks = projectData.tasks || [];
+    const delayedTasks = [];
+    const taskMap = {}; // task_id -> task object
+    const dependencyGraph = {}; // task_id -> [dependent task_ids] (このタスクに依存しているタスクのID)
+
+    // 1. タスクマップを構築 & 遅延タスクを抽出
+    Logger.log('--- 遅延タスクを検出中 ---');
+    for (const task of tasks) {
+      taskMap[task.task_id] = task;
+
+      // 遅延タスク判定: 終了日 < 今日 && 進捗率 < 100%
+      if (task.end_date) {
+        const endDate = new Date(task.end_date);
+        endDate.setHours(0, 0, 0, 0);
+
+        const progress = task.progress || 0;
+        const progressPercent = progress <= 1 ? progress * 100 : progress;
+
+        if (endDate < today && progressPercent < 100) {
+          const daysOverdue = Math.floor((today - endDate) / (1000 * 60 * 60 * 24));
+          delayedTasks.push({
+            ...task,
+            daysOverdue: daysOverdue
+          });
+          Logger.log(`  遅延タスク検出: ${task.task_id} (${task.task_name}) - ${daysOverdue}日遅延`);
+        }
+      }
+    }
+
+    Logger.log(`✓ 遅延タスク: ${delayedTasks.length}件`);
+
+    // 2. 依存関係グラフを構築（逆方向: どのタスクが自分に依存しているか）
+    Logger.log('--- 依存関係グラフを構築中 ---');
+    for (const task of tasks) {
+      const dependencies = task.dependencies || [];
+      for (const depTaskId of dependencies) {
+        if (!dependencyGraph[depTaskId]) {
+          dependencyGraph[depTaskId] = [];
+        }
+        dependencyGraph[depTaskId].push(task.task_id);
+      }
+    }
+
+    // 3. 各遅延タスクについて影響範囲を分析（DFS: 深さ優先探索）
+    Logger.log('--- 影響範囲を分析中 ---');
+    const impactedTasks = {}; // delayed_task_id -> { impactedTaskIds: [...], criticalPathLength: N }
+
+    for (const delayedTask of delayedTasks) {
+      const visited = new Set();
+      const impactedTaskIds = [];
+      let maxDepth = 0;
+
+      // DFSで影響範囲を探索
+      const dfs = (taskId, depth) => {
+        if (visited.has(taskId)) {
+          return; // 既に訪問済み（循環依存の場合）
+        }
+
+        visited.add(taskId);
+        maxDepth = Math.max(maxDepth, depth);
+
+        // 遅延タスク自身は除外
+        if (taskId !== delayedTask.task_id) {
+          impactedTaskIds.push(taskId);
+        }
+
+        // このタスクに依存しているタスクを再帰的に探索
+        const dependentTasks = dependencyGraph[taskId] || [];
+        for (const dependentTaskId of dependentTasks) {
+          dfs(dependentTaskId, depth + 1);
+        }
+      };
+
+      dfs(delayedTask.task_id, 0);
+
+      impactedTasks[delayedTask.task_id] = {
+        impactedTaskIds: impactedTaskIds,
+        criticalPathLength: maxDepth
+      };
+
+      Logger.log(`  ${delayedTask.task_id}: ${impactedTaskIds.length}件のタスクに影響, クリティカルパス長=${maxDepth}`);
+    }
+
+    // 4. 循環依存を検出
+    Logger.log('--- 循環依存を検出中 ---');
+    const circularDependencies = detectCircularDependencies(tasks);
+
+    if (circularDependencies.length > 0) {
+      Logger.log(`⚠ 循環依存を検出: ${circularDependencies.length}件`);
+      for (const cycle of circularDependencies) {
+        Logger.log(`  循環: ${cycle.join(' -> ')}`);
+      }
+    } else {
+      Logger.log('✓ 循環依存なし');
+    }
+
+    return {
+      delayedTasks: delayedTasks,
+      impactedTasks: impactedTasks,
+      circularDependencies: circularDependencies,
+      taskMap: taskMap
+    };
+
+  } catch (error) {
+    Logger.log(`✗ 依存関係分析エラー: ${error.message}`);
+    Logger.log(`✗ スタックトレース: ${error.stack}`);
+    throw error;
+  }
+}
+
+/**
+ * 循環依存を検出
+ *
+ * タスク間の依存関係に循環がないかをチェックします。
+ * 循環依存がある場合、それらのタスクIDのサイクルを返します。
+ *
+ * @param {Array} tasks - タスク配列
+ * @return {Array} 循環依存のリスト [[taskId1, taskId2, ...], ...]
+ */
+function detectCircularDependencies(tasks) {
+  const circularDeps = [];
+  const visited = new Set();
+  const recursionStack = new Set();
+  const taskMap = {};
+
+  // タスクマップを構築
+  for (const task of tasks) {
+    taskMap[task.task_id] = task;
+  }
+
+  // DFSで循環依存を検出
+  const dfs = (taskId, path) => {
+    if (recursionStack.has(taskId)) {
+      // 循環依存を発見
+      const cycleStart = path.indexOf(taskId);
+      const cycle = path.slice(cycleStart).concat([taskId]);
+      circularDeps.push(cycle);
+      return true;
+    }
+
+    if (visited.has(taskId)) {
+      return false;
+    }
+
+    visited.add(taskId);
+    recursionStack.add(taskId);
+    path.push(taskId);
+
+    const task = taskMap[taskId];
+    if (task && task.dependencies) {
+      for (const depTaskId of task.dependencies) {
+        dfs(depTaskId, path.slice());
+      }
+    }
+
+    recursionStack.delete(taskId);
+    return false;
+  };
+
+  // 全タスクをチェック
+  for (const task of tasks) {
+    if (!visited.has(task.task_id)) {
+      dfs(task.task_id, []);
+    }
+  }
+
+  return circularDeps;
+}
+
+/**
+ * 依存タスクブロッカーの通知をDiscordに送信
+ *
+ * 遅延タスクとその影響範囲をEmbed形式でDiscordに通知します。
+ *
+ * @param {Object} impactReport - analyzeDependencyImpact()の戻り値
+ * @param {Object} projectData - プロジェクトデータ
+ * @param {Object} criticalPathReport - calculateCriticalPath()の戻り値（オプション）
+ */
+function sendDependencyBlockerNotification(impactReport, projectData, criticalPathReport) {
+  try {
+    if (!impactReport.delayedTasks || impactReport.delayedTasks.length === 0) {
+      Logger.log('✓ 遅延タスクがないため通知をスキップ');
+      return;
+    }
+
+    const embeds = [];
+
+    // プロジェクト情報
+    const projectName = projectData.project_name || 'プロジェクト';
+    const projectId = projectData.project_id || '';
+
+    // 遅延タスク情報を整形（最大5件まで表示）
+    const delayedTasksInfo = impactReport.delayedTasks
+      .slice(0, 5)
+      .map(task => {
+        const taskName = task.task_name || task.task_id;
+        const daysOverdue = task.daysOverdue || 0;
+        const impact = impactReport.impactedTasks[task.task_id];
+        const impactCount = impact ? impact.impactedTaskIds.length : 0;
+        const criticalPathLength = impact ? impact.criticalPathLength : 0;
+
+        return `• **${taskName}**\n  - 遅延: ${daysOverdue}日\n  - 影響タスク数: ${impactCount}件\n  - クリティカルパス長: ${criticalPathLength}`;
+      })
+      .join('\n\n');
+
+    const moreCount = impactReport.delayedTasks.length > 5
+      ? `\n\n... 他${impactReport.delayedTasks.length - 5}件の遅延タスク`
+      : '';
+
+    // 循環依存情報
+    let circularDepsInfo = '';
+    if (impactReport.circularDependencies.length > 0) {
+      circularDepsInfo = '\n\n⚠️ **循環依存を検出**\n' +
+        impactReport.circularDependencies
+          .slice(0, 3)
+          .map(cycle => `• ${cycle.join(' → ')}`)
+          .join('\n');
+
+      if (impactReport.circularDependencies.length > 3) {
+        circularDepsInfo += `\n... 他${impactReport.circularDependencies.length - 3}件`;
+      }
+    }
+
+    const embed = {
+      title: `⚠️ 依存タスクブロッカー検知: ${projectName}`,
+      description: delayedTasksInfo + moreCount + circularDepsInfo,
+      color: 0xFF6B6B, // 赤色
+      footer: {
+        text: `合計 ${impactReport.delayedTasks.length}件の遅延タスク`
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    // クリティカルパス情報を追加
+    if (criticalPathReport && !criticalPathReport.skipped && !criticalPathReport.error) {
+      embed.fields = [{
+        name: '🎯 クリティカルパス情報',
+        value: `プロジェクト所要時間: **${criticalPathReport.projectDuration}日**\n` +
+               `クリティカルタスク数: **${criticalPathReport.criticalTasks.length}件**\n` +
+               `Near-Criticalタスク数: **${criticalPathReport.nearCriticalTasks.length}件**`,
+        inline: false
+      }];
+    }
+
+    embeds.push(embed);
+
+    // Discord Webhook送信
+    const payload = { embeds: embeds };
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(CONFIG.DISCORD_WEBHOOK_URL, options);
+    const responseCode = response.getResponseCode();
+
+    if (responseCode === 200 || responseCode === 204) {
+      Logger.log(`✓ Discord通知送信完了: ${responseCode}`);
+    } else {
+      Logger.log(`⚠ Discord通知送信エラー: ${responseCode}`);
+      Logger.log(`レスポンス: ${response.getContentText()}`);
+    }
+
+  } catch (error) {
+    Logger.log(`✗ Discord通知エラー: ${error.message}`);
+    Logger.log(`✗ スタックトレース: ${error.stack}`);
+    throw error;
+  }
+}
+
+/**
+ * 依存タスクブロッカーを自動チェック（トリガー用）
+ *
+ * すべてのGanttシートで遅延タスクの影響を分析し、Discord通知とハイライトを実行します。
+ *
+ * トリガー設定:
+ * - 頻度: 毎日9:00に実行
+ * - 設定方法: Apps Scriptエディタの「トリガー」から設定
+ */
+function checkDependencyBlockers() {
+  try {
+    Logger.log('=== 依存タスクブロッカーチェック開始 ===');
+
+    const sheetManager = new SheetManager();
+    const ss = sheetManager.ss;
+    const allSheets = ss.getSheets();
+
+    // Ganttシートを検出
+    const ganttSheets = allSheets.filter(sheet => {
+      const name = sheet.getName();
+      return name.match(/^\d{1,4}_.+$/); // "X_プロジェクト名" または "XXXX_プロジェクト名" 形式
+    });
+
+    Logger.log(`✓ Ganttシート検出: ${ganttSheets.length}件`);
+
+    if (ganttSheets.length === 0) {
+      Logger.log('⚠ Ganttシートが見つかりませんでした。');
+      return;
+    }
+
+    let totalProjects = 0;
+    let totalDelayed = 0;
+    let totalImpacted = 0;
+    let errorCount = 0;
+
+    // 各Ganttシートをチェック
+    for (const ganttSheet of ganttSheets) {
+      try {
+        Logger.log(`--- ${ganttSheet.getName()} をチェック中 ---`);
+
+        // Ganttシートからプロジェクトデータを読み取り
+        const projectData = sheetManager.readProjectDataFromSheet(ganttSheet);
+
+        if (!projectData) {
+          Logger.log(`⚠ データ読み取り失敗: ${ganttSheet.getName()}`);
+          errorCount++;
+          continue;
+        }
+
+        // 依存関係の影響を分析
+        const impactReport = analyzeDependencyImpact(projectData);
+
+        // クリティカルパス分析
+        const criticalPathReport = calculateCriticalPath(projectData);
+        if (criticalPathReport && !criticalPathReport.skipped) {
+          Logger.log(`[INFO] Critical path calculated for ${ganttSheet.getName()}: ${criticalPathReport.projectDuration} days`);
+        }
+
+        if (impactReport.delayedTasks.length > 0) {
+          // Discord通知を送信（クリティカルパス情報を含む）
+          sendDependencyBlockerNotification(impactReport, projectData, criticalPathReport);
+
+          // Ganttシートでブロックタスクをハイライト
+          highlightBlockedTasks(ganttSheet, projectData, impactReport);
+
+          // クリティカルパスをハイライト
+          highlightCriticalPath(ganttSheet, projectData, criticalPathReport);
+
+          totalDelayed += impactReport.delayedTasks.length;
+
+          // 影響を受けるタスク数を集計
+          for (const delayedTaskId in impactReport.impactedTasks) {
+            totalImpacted += impactReport.impactedTasks[delayedTaskId].impactedTaskIds.length;
+          }
+
+          Logger.log(`✓ ${ganttSheet.getName()}: ${impactReport.delayedTasks.length}件の遅延タスク検出`);
+        } else {
+          Logger.log(`✓ ${ganttSheet.getName()}: 遅延タスクなし`);
+        }
+
+        totalProjects++;
+
+      } catch (error) {
+        Logger.log(`✗ チェックエラー (${ganttSheet.getName()}): ${error.message}`);
+        errorCount++;
+      }
+    }
+
+    Logger.log('=== チェック完了 ===');
+    Logger.log(`プロジェクト: ${totalProjects}件 / 遅延タスク: ${totalDelayed}件 / 影響タスク: ${totalImpacted}件 / エラー: ${errorCount}件`);
+
+    // サマリー通知（遅延タスクがある場合のみ）
+    if (totalDelayed > 0) {
+      sendDiscordNotification(
+        `📊 **依存タスクブロッカーチェック完了**\n\n` +
+        `チェック対象: ${totalProjects}件のプロジェクト\n` +
+        `遅延タスク: ${totalDelayed}件\n` +
+        `影響を受けるタスク: ${totalImpacted}件\n` +
+        `エラー: ${errorCount}件`,
+        errorCount > 0
+      );
+    }
+
+  } catch (error) {
+    Logger.log('✗ 全体エラー: ' + error.message);
+    Logger.log('✗ スタックトレース: ' + error.stack);
+    sendDiscordNotification(
+      `依存タスクブロッカーチェック中にエラーが発生しました。\n\nエラー内容: ${error.message}`,
+      true
+    );
+    throw error;
+  }
+}
+
+/**
+ * クリティカルパスを計算
+ *
+ * タスクの依存関係からクリティカルパス（最長経路）を算出します。
+ * Kahn's Algorithmによるトポロジカルソート + Forward/Backward Passで計算。
+ *
+ * @param {Object} projectData - プロジェクトデータ（tasks配列を含む）
+ * @return {Object} クリティカルパス情報
+ *   {
+ *     criticalTasks: [task_id, ...],        // クリティカルパス上のタスクID配列
+ *     taskMetrics: {
+ *       task_id: {
+ *         es: Number,    // 最早開始時刻（日数）
+ *         ef: Number,    // 最早終了時刻（日数）
+ *         ls: Number,    // 最遅開始時刻（日数）
+ *         lf: Number,    // 最遅終了時刻（日数）
+ *         slack: Number  // スラック（日数）
+ *       }
+ *     },
+ *     nearCriticalTasks: [task_id, ...],    // Near-critical（Slack 1-2日）
+ *     projectDuration: Number                // プロジェクト全体の所要日数
+ *   }
+ */
+function calculateCriticalPath(projectData) {
+  const tasks = projectData.tasks;
+
+  // パフォーマンス保護: タスク数が多すぎる場合はスキップ
+  if (tasks.length > 500) {
+    Logger.log('[WARNING] Too many tasks (' + tasks.length + '), skipping critical path analysis');
+    return {
+      criticalTasks: [],
+      taskMetrics: {},
+      nearCriticalTasks: [],
+      projectDuration: 0,
+      skipped: true
+    };
+  }
+
+  // 1. タスクマップ構築（ID → タスクオブジェクト）
+  const taskMap = {};
+  for (const task of tasks) {
+    taskMap[task.task_id] = task;
+  }
+
+  // 2. グラフ構築（隣接リスト形式）
+  const adjacencyList = {};  // task_id → [dependent_task_ids]
+  const inDegree = {};       // task_id → 入次数
+
+  for (const task of tasks) {
+    adjacencyList[task.task_id] = [];
+    inDegree[task.task_id] = 0;
+  }
+
+  for (const task of tasks) {
+    if (task.dependencies && task.dependencies.length > 0) {
+      for (const depId of task.dependencies) {
+        if (adjacencyList[depId]) {
+          adjacencyList[depId].push(task.task_id);
+          inDegree[task.task_id]++;
+        }
+      }
+    }
+  }
+
+  // 3. トポロジカルソート（Kahn's Algorithm）
+  const queue = [];
+  const topologicalOrder = [];
+
+  for (const taskId in inDegree) {
+    if (inDegree[taskId] === 0) {
+      queue.push(taskId);
+    }
+  }
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    topologicalOrder.push(current);
+
+    for (const neighbor of adjacencyList[current]) {
+      inDegree[neighbor]--;
+      if (inDegree[neighbor] === 0) {
+        queue.push(neighbor);
+      }
+    }
+  }
+
+  // 循環依存チェック
+  if (topologicalOrder.length !== tasks.length) {
+    Logger.log('[ERROR] Circular dependency detected in critical path analysis');
+    return {
+      criticalTasks: [],
+      taskMetrics: {},
+      nearCriticalTasks: [],
+      projectDuration: 0,
+      error: 'circular_dependency'
+    };
+  }
+
+  // 4. Forward Pass（ES/EF計算）
+  const taskMetrics = {};
+
+  for (const taskId of topologicalOrder) {
+    const task = taskMap[taskId];
+    const duration = calculateTaskDuration(task.start_date, task.end_date);
+
+    taskMetrics[taskId] = {
+      es: 0,
+      ef: 0,
+      ls: 0,
+      lf: 0,
+      slack: 0,
+      duration: duration
+    };
+
+    // 先行タスクの最大EFを計算
+    let maxEF = 0;
+    if (task.dependencies && task.dependencies.length > 0) {
+      for (const depId of task.dependencies) {
+        if (taskMetrics[depId]) {
+          maxEF = Math.max(maxEF, taskMetrics[depId].ef);
+        }
+      }
+    }
+
+    taskMetrics[taskId].es = maxEF;
+    taskMetrics[taskId].ef = maxEF + duration;
+  }
+
+  // 5. プロジェクト全体の所要時間を計算
+  let projectDuration = 0;
+  for (const taskId in taskMetrics) {
+    projectDuration = Math.max(projectDuration, taskMetrics[taskId].ef);
+  }
+
+  // 6. Backward Pass（LS/LF計算）
+  for (let i = topologicalOrder.length - 1; i >= 0; i--) {
+    const taskId = topologicalOrder[i];
+    const task = taskMap[taskId];
+
+    // 後続タスクがない場合はLF = EF
+    if (adjacencyList[taskId].length === 0) {
+      taskMetrics[taskId].lf = taskMetrics[taskId].ef;
+    } else {
+      // 後続タスクの最小LSを計算
+      let minLS = Infinity;
+      for (const successorId of adjacencyList[taskId]) {
+        if (taskMetrics[successorId]) {
+          minLS = Math.min(minLS, taskMetrics[successorId].ls);
+        }
+      }
+      taskMetrics[taskId].lf = minLS;
+    }
+
+    taskMetrics[taskId].ls = taskMetrics[taskId].lf - taskMetrics[taskId].duration;
+  }
+
+  // 7. Slack計算とクリティカルパス/Near-critical判定
+  const criticalTasks = [];
+  const nearCriticalTasks = [];
+
+  for (const taskId in taskMetrics) {
+    const slack = taskMetrics[taskId].ls - taskMetrics[taskId].es;
+    taskMetrics[taskId].slack = slack;
+
+    if (slack === 0) {
+      criticalTasks.push(taskId);
+    } else if (slack > 0 && slack <= 2) {
+      nearCriticalTasks.push(taskId);
+    }
+  }
+
+  return {
+    criticalTasks: criticalTasks,
+    taskMetrics: taskMetrics,
+    nearCriticalTasks: nearCriticalTasks,
+    projectDuration: projectDuration
+  };
+}
+
+/**
+ * 開始日と終了日から所要日数を計算
+ *
+ * @param {string} startDate - 開始日 (YYYY-MM-DD)
+ * @param {string} endDate - 終了日 (YYYY-MM-DD)
+ * @return {number} 所要日数
+ */
+function calculateTaskDuration(startDate, endDate) {
+  if (!startDate || !endDate) return 1;  // デフォルト1日
+
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  const duration = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
+
+  return duration > 0 ? duration : 1;
+}
+
+// ============================================================
+// バーンダウンチャート機能
+// ============================================================
+
+/**
+ * 日次バーンダウンデータ記録
+ *
+ * トリガー経由で毎日自動実行され、全プロジェクトの進捗状況を記録します。
+ * 同日のデータが既に存在する場合は上書きします。
+ */
+function recordDailyBurndownData() {
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const sheetManager = new SheetManager();
+    const burndownSheet = sheetManager.getOrCreateBurndownSheet();
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const dateStr = Utilities.formatDate(today, 'Asia/Tokyo', 'yyyy-MM-dd');
+
+    // 全Ganttシートを取得（プロジェクト識別子で判定）
+    const ganttSheets = ss.getSheets().filter(sheet =>
+      sheet.getName().match(/^\d{1,4}_.+$/)
+    );
+
+    if (ganttSheets.length === 0) {
+      Logger.log('[INFO] No Gantt sheets found for burndown recording');
+      return;
+    }
+
+    Logger.log('[INFO] Recording burndown data for ' + ganttSheets.length + ' projects');
+
+    for (const ganttSheet of ganttSheets) {
+      try {
+        const projectData = sheetManager.readProjectDataFromSheet(ganttSheet);
+        const projectName = projectData.project_name || ganttSheet.getName();
+
+        // 進捗率計算
+        const expectedProgress = calculateExpectedProgress(projectData);
+        const completedTasks = projectData.tasks.filter(t => t.progress === 100).length;
+        const totalTasks = projectData.tasks.length;
+        const actualProgress = totalTasks > 0 ? (completedTasks / totalTasks) * 100 : 0;
+        const remainingTasks = totalTasks - completedTasks;
+
+        // ベロシティ計算（過去7日間）
+        const velocity = calculateVelocity(burndownSheet, projectName, 7);
+
+        // 完了予測日計算
+        let predictedDate = '-';
+        if (velocity > 0 && remainingTasks > 0) {
+          const daysToCompletion = Math.ceil(remainingTasks / velocity);
+          const predicted = new Date(today);
+          predicted.setDate(predicted.getDate() + daysToCompletion);
+          predictedDate = Utilities.formatDate(predicted, 'Asia/Tokyo', 'yyyy-MM-dd');
+        }
+
+        // 既存行を検索（同日・同プロジェクト）
+        const existingRow = findBurndownRow(burndownSheet, today, projectName);
+
+        const rowData = [
+          dateStr,
+          projectName,
+          expectedProgress,
+          actualProgress,
+          remainingTasks,
+          completedTasks,
+          totalTasks,
+          velocity,
+          predictedDate
+        ];
+
+        if (existingRow > 0) {
+          // 既存データを上書き
+          burndownSheet.getRange(existingRow, 1, 1, rowData.length).setValues([rowData]);
+          Logger.log('[INFO] Updated burndown data for ' + projectName);
+        } else {
+          // 新規データを追加
+          burndownSheet.appendRow(rowData);
+          Logger.log('[INFO] Recorded new burndown data for ' + projectName);
+        }
+
+      } catch (projectError) {
+        Logger.log('[ERROR] Failed to record burndown for ' + ganttSheet.getName() + ': ' + projectError.message);
+      }
+    }
+
+    // 古いデータをクリーンアップ（90日超過）
+    cleanupOldBurndownData(burndownSheet, 90);
+
+    Logger.log('[INFO] Daily burndown recording completed');
+
+  } catch (error) {
+    Logger.log('[ERROR] recordDailyBurndownData failed: ' + error.message);
+  }
+}
+
+/**
+ * 予定進捗率の計算
+ *
+ * 現在日時を基準に、プロジェクト期間における理想的な進捗率を計算します。
+ * 計算式: (経過日数 / 全体日数) × 100
+ *
+ * @param {Object} projectData - プロジェクトデータ
+ * @return {Number} 予定進捗率（%、小数第1位まで）
+ */
+function calculateExpectedProgress(projectData) {
+  try {
+    const tasks = projectData.tasks || [];
+    if (tasks.length === 0) return 0;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // プロジェクト全体の開始日・終了日を取得
+    let projectStart = null;
+    let projectEnd = null;
+
+    for (const task of tasks) {
+      if (task.start_date) {
+        if (!projectStart || task.start_date < projectStart) {
+          projectStart = task.start_date;
+        }
+      }
+      if (task.end_date) {
+        if (!projectEnd || task.end_date > projectEnd) {
+          projectEnd = task.end_date;
+        }
+      }
+    }
+
+    if (!projectStart || !projectEnd) {
+      Logger.log('[WARNING] Cannot calculate expected progress: missing start/end dates');
+      return 0;
+    }
+
+    // 日数計算
+    const totalDays = Math.max(1, Math.ceil((projectEnd - projectStart) / (1000 * 60 * 60 * 24)));
+    const elapsedDays = Math.max(0, Math.ceil((today - projectStart) / (1000 * 60 * 60 * 24)));
+
+    // 予定進捗率を計算（0～100%にクリップ）
+    const expectedProgress = Math.min(100, Math.max(0, (elapsedDays / totalDays) * 100));
+
+    return Math.round(expectedProgress * 10) / 10;  // 小数第1位まで
+
+  } catch (error) {
+    Logger.log('[ERROR] calculateExpectedProgress failed: ' + error.message);
+    return 0;
+  }
+}
+
+/**
+ * ベロシティ計算（過去N日間の平均完了タスク数/日）
+ *
+ * @param {Sheet} burndownSheet - バーンダウンデータシート
+ * @param {String} projectName - プロジェクト名
+ * @param {Number} days - 過去何日間のデータを使用するか（デフォルト: 7）
+ * @return {Number} ベロシティ（小数第2位まで）
+ */
+function calculateVelocity(burndownSheet, projectName, days) {
+  try {
+    days = days || 7;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const dataRange = burndownSheet.getDataRange();
+    const values = dataRange.getValues();
+
+    // ヘッダー行をスキップし、該当プロジェクトのデータを抽出
+    const projectData = [];
+    for (let i = 1; i < values.length; i++) {
+      const row = values[i];
+      const recordDateStr = row[0];  // A列: 記録日
+      const recordProjectName = row[1];  // B列: プロジェクト名
+      const completedTasks = row[5];  // F列: 完了タスク数
+
+      if (recordProjectName !== projectName) continue;
+
+      // 日付解析
+      let recordDate;
+      if (recordDateStr instanceof Date) {
+        recordDate = new Date(recordDateStr);
+      } else {
+        recordDate = new Date(recordDateStr);
+      }
+      recordDate.setHours(0, 0, 0, 0);
+
+      // 過去N日間のデータのみ
+      const daysDiff = Math.ceil((today - recordDate) / (1000 * 60 * 60 * 24));
+      if (daysDiff >= 0 && daysDiff < days) {
+        projectData.push({
+          date: recordDate,
+          completedTasks: completedTasks
+        });
+      }
+    }
+
+    if (projectData.length < 2) {
+      // データ不足の場合はベロシティ計算不可
+      return 0;
+    }
+
+    // 日付でソート（古い順）
+    projectData.sort((a, b) => a.date - b.date);
+
+    // 完了タスク数の差分を計算
+    const oldest = projectData[0].completedTasks;
+    const newest = projectData[projectData.length - 1].completedTasks;
+    const taskDiff = newest - oldest;
+    const dayDiff = Math.max(1, projectData.length - 1);
+
+    const velocity = taskDiff / dayDiff;
+
+    return Math.round(velocity * 100) / 100;  // 小数第2位まで
+
+  } catch (error) {
+    Logger.log('[ERROR] calculateVelocity failed: ' + error.message);
+    return 0;
+  }
+}
+
+/**
+ * バーンダウンシートから指定日・プロジェクトの行番号を検索
+ *
+ * @param {Sheet} burndownSheet - バーンダウンデータシート
+ * @param {Date} date - 記録日
+ * @param {String} projectName - プロジェクト名
+ * @return {Number} 行番号（見つからない場合は0）
+ */
+function findBurndownRow(burndownSheet, date, projectName) {
+  try {
+    const dateStr = Utilities.formatDate(date, 'Asia/Tokyo', 'yyyy-MM-dd');
+    const dataRange = burndownSheet.getDataRange();
+    const values = dataRange.getValues();
+
+    for (let i = 1; i < values.length; i++) {  // ヘッダー行をスキップ
+      const row = values[i];
+      const recordDateStr = row[0];  // A列: 記録日
+      const recordProjectName = row[1];  // B列: プロジェクト名
+
+      // 日付文字列に変換して比較
+      let compareDateStr;
+      if (recordDateStr instanceof Date) {
+        compareDateStr = Utilities.formatDate(recordDateStr, 'Asia/Tokyo', 'yyyy-MM-dd');
+      } else {
+        compareDateStr = recordDateStr;
+      }
+
+      if (compareDateStr === dateStr && recordProjectName === projectName) {
+        return i + 1;  // 行番号（1-indexed）
+      }
+    }
+
+    return 0;  // 見つからない
+
+  } catch (error) {
+    Logger.log('[ERROR] findBurndownRow failed: ' + error.message);
+    return 0;
+  }
+}
+
+/**
+ * 古いバーンダウンデータの削除（指定日数より前のデータ）
+ *
+ * @param {Sheet} burndownSheet - バーンダウンデータシート
+ * @param {Number} days - 保持日数（デフォルト: 90日）
+ */
+function cleanupOldBurndownData(burndownSheet, days) {
+  try {
+    days = days || 90;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const cutoffDate = new Date(today);
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const dataRange = burndownSheet.getDataRange();
+    const values = dataRange.getValues();
+
+    // 削除対象行を収集（後ろから削除するため逆順）
+    const rowsToDelete = [];
+    for (let i = 1; i < values.length; i++) {  // ヘッダー行をスキップ
+      const row = values[i];
+      const recordDateStr = row[0];  // A列: 記録日
+
+      let recordDate;
+      if (recordDateStr instanceof Date) {
+        recordDate = new Date(recordDateStr);
+      } else {
+        recordDate = new Date(recordDateStr);
+      }
+      recordDate.setHours(0, 0, 0, 0);
+
+      if (recordDate < cutoffDate) {
+        rowsToDelete.push(i + 1);  // 行番号（1-indexed）
+      }
+    }
+
+    // 後ろから順に削除（行番号がずれないように）
+    rowsToDelete.reverse();
+    for (const rowNum of rowsToDelete) {
+      burndownSheet.deleteRow(rowNum);
+    }
+
+    if (rowsToDelete.length > 0) {
+      Logger.log('[INFO] Cleaned up ' + rowsToDelete.length + ' old burndown records (older than ' + days + ' days)');
+    }
+
+  } catch (error) {
+    Logger.log('[ERROR] cleanupOldBurndownData failed: ' + error.message);
+  }
+}
+
+/**
+ * バーンダウンチャート日次記録トリガーのセットアップ
+ *
+ * この関数を実行すると、毎日午前9時に recordDailyBurndownData() を自動実行する
+ * トリガーが登録されます。既存のトリガーがある場合は重複登録されません。
+ *
+ * GASエディタから手動で1回実行してください。
+ */
+function setupDailyBurndownTrigger() {
+  try {
+    const functionName = 'recordDailyBurndownData';
+
+    // 既存のトリガーを確認
+    const triggers = ScriptApp.getProjectTriggers();
+    const existingTrigger = triggers.find(trigger =>
+      trigger.getHandlerFunction() === functionName
+    );
+
+    if (existingTrigger) {
+      Logger.log('[INFO] Daily burndown trigger already exists');
+      Logger.log('✅ トリガーは既に設定されています（毎日午前9時実行）');
+      return;
+    }
+
+    // 新規トリガー作成（毎日午前9時）
+    ScriptApp.newTrigger(functionName)
+      .timeBased()
+      .atHour(9)
+      .everyDays(1)
+      .create();
+
+    Logger.log('[INFO] Daily burndown trigger created successfully');
+    Logger.log('✅ トリガーを作成しました！');
+    Logger.log('📅 毎日午前9時にバーンダウンデータが自動記録されます');
+
+  } catch (error) {
+    Logger.log('[ERROR] Failed to setup trigger: ' + error.message);
+    Logger.log('❌ トリガー設定に失敗しました: ' + error.message);
+  }
+}
+
+/**
+ * バーンダウンチャート日次記録トリガーの削除
+ *
+ * 自動記録を停止したい場合にこの関数を実行してください。
+ */
+function removeDailyBurndownTrigger() {
+  try {
+    const functionName = 'recordDailyBurndownData';
+    const triggers = ScriptApp.getProjectTriggers();
+
+    let removedCount = 0;
+    for (const trigger of triggers) {
+      if (trigger.getHandlerFunction() === functionName) {
+        ScriptApp.deleteTrigger(trigger);
+        removedCount++;
+      }
+    }
+
+    if (removedCount > 0) {
+      Logger.log('[INFO] Removed ' + removedCount + ' trigger(s)');
+      Logger.log('✅ トリガーを削除しました（' + removedCount + '件）');
+      Logger.log('⏸️  バーンダウンデータの自動記録が停止されました');
+    } else {
+      Logger.log('[INFO] No triggers found');
+      Logger.log('ℹ️  削除対象のトリガーはありませんでした');
+    }
+
+  } catch (error) {
+    Logger.log('[ERROR] Failed to remove trigger: ' + error.message);
+    Logger.log('❌ トリガー削除に失敗しました: ' + error.message);
+  }
+}
+
+/**
+ * 全シート同期トリガーのセットアップ
+ *
+ * この関数を実行すると、毎日午前10時に syncAllSheets() を自動実行する
+ * トリガーが登録されます。既存のトリガーがある場合は重複登録されません。
+ *
+ * GASエディタから手動で1回実行してください。
+ */
+function setupSyncAllSheetsTrigger() {
+  try {
+    const functionName = 'syncAllSheets';
+
+    // 既存のトリガーを確認
+    const triggers = ScriptApp.getProjectTriggers();
+    const existingTrigger = triggers.find(trigger =>
+      trigger.getHandlerFunction() === functionName
+    );
+
+    if (existingTrigger) {
+      Logger.log('[INFO] Sync all sheets trigger already exists');
+      Logger.log('✅ トリガーは既に設定されています（毎日午前10時実行）');
+      return;
+    }
+
+    // 新規トリガー作成（毎日午前10時）
+    ScriptApp.newTrigger(functionName)
+      .timeBased()
+      .atHour(10)
+      .everyDays(1)
+      .create();
+
+    Logger.log('[INFO] Sync all sheets trigger created successfully');
+    Logger.log('✅ トリガーを作成しました！');
+    Logger.log('📅 毎日午前10時に全シート同期が自動実行されます');
+    Logger.log('📊 プロジェクト一覧、全タスク、期日切れタスクが更新されます');
+
+  } catch (error) {
+    Logger.log('[ERROR] Failed to setup trigger: ' + error.message);
+    Logger.log('❌ トリガー設定に失敗しました: ' + error.message);
+  }
+}
+
+/**
+ * 全シート同期トリガーの削除
+ *
+ * 自動同期を停止したい場合にこの関数を実行してください。
+ */
+function removeSyncAllSheetsTrigger() {
+  try {
+    const functionName = 'syncAllSheets';
+    const triggers = ScriptApp.getProjectTriggers();
+
+    let removedCount = 0;
+    for (const trigger of triggers) {
+      if (trigger.getHandlerFunction() === functionName) {
+        ScriptApp.deleteTrigger(trigger);
+        removedCount++;
+      }
+    }
+
+    if (removedCount > 0) {
+      Logger.log('[INFO] Removed ' + removedCount + ' trigger(s)');
+      Logger.log('✅ トリガーを削除しました（' + removedCount + '件）');
+      Logger.log('⏸️  全シート同期の自動実行が停止されました');
+    } else {
+      Logger.log('[INFO] No triggers found');
+      Logger.log('ℹ️  削除対象のトリガーはありませんでした');
+    }
+
+  } catch (error) {
+    Logger.log('[ERROR] Failed to remove trigger: ' + error.message);
+    Logger.log('❌ トリガー削除に失敗しました: ' + error.message);
+  }
+}
+
+/**
+ * プロジェクト健全性レポート生成
+ *
+ * @param {Object} projectData - プロジェクトデータ
+ * @param {Date} today - 基準日
+ * @return {Object} レポートオブジェクト
+ */
+function generateProjectHealthReport(projectData, today) {
+  try {
+    today = today || new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const tasks = projectData.tasks || [];
+    const projectName = projectData.project_name || 'プロジェクト';
+
+    // 基本統計
+    const totalTasks = tasks.length;
+    let completedTasks = 0;
+    let overdueTasks = 0;
+    let totalProgress = 0;
+
+    // 担当者別ワークロード
+    const assigneeWorkload = {};
+
+    // 今週期限、来週開始のタスク
+    const thisWeekDueTasks = [];
+    const nextWeekStartTasks = [];
+
+    // 今週の範囲（日曜日～土曜日）
+    const thisWeekEnd = new Date(today);
+    thisWeekEnd.setDate(today.getDate() + (6 - today.getDay())); // 次の土曜日
+    thisWeekEnd.setHours(23, 59, 59, 999);
+
+    // 来週の範囲
+    const nextWeekStart = new Date(thisWeekEnd);
+    nextWeekStart.setDate(thisWeekEnd.getDate() + 1);
+    nextWeekStart.setHours(0, 0, 0, 0);
+
+    const nextWeekEnd = new Date(nextWeekStart);
+    nextWeekEnd.setDate(nextWeekStart.getDate() + 6);
+    nextWeekEnd.setHours(23, 59, 59, 999);
+
+    // プロジェクト全体の開始日・終了日を取得
+    let projectStartDate = null;
+    let projectEndDate = null;
+
+    for (const task of tasks) {
+      // 進捗率の正規化
+      const progress = task.progress || 0;
+      const progressPercent = progress <= 1 ? progress * 100 : progress;
+      totalProgress += progressPercent;
+
+      if (progressPercent >= 100) {
+        completedTasks++;
+      }
+
+      // 期日切れチェック
+      if (task.end_date) {
+        const endDate = new Date(task.end_date);
+        endDate.setHours(0, 0, 0, 0);
+
+        if (endDate < today && progressPercent < 100) {
+          overdueTasks++;
+        }
+
+        // 今週期限のタスク
+        if (endDate >= today && endDate <= thisWeekEnd && progressPercent < 100) {
+          thisWeekDueTasks.push(task);
+        }
+
+        // プロジェクト終了日の更新
+        if (!projectEndDate || endDate > projectEndDate) {
+          projectEndDate = endDate;
+        }
+      }
+
+      // 開始日チェック
+      if (task.start_date) {
+        const startDate = new Date(task.start_date);
+        startDate.setHours(0, 0, 0, 0);
+
+        // 来週開始のタスク
+        if (startDate >= nextWeekStart && startDate <= nextWeekEnd) {
+          nextWeekStartTasks.push(task);
+        }
+
+        // プロジェクト開始日の更新
+        if (!projectStartDate || startDate < projectStartDate) {
+          projectStartDate = startDate;
+        }
+      }
+
+      // 担当者別ワークロード
+      const assignee = task.assignee || '未割り当て';
+      if (!assigneeWorkload[assignee]) {
+        assigneeWorkload[assignee] = {
+          totalTasks: 0,
+          completedTasks: 0,
+          inProgressTasks: 0,
+          overdueTasks: 0
+        };
+      }
+
+      assigneeWorkload[assignee].totalTasks++;
+
+      if (progressPercent >= 100) {
+        assigneeWorkload[assignee].completedTasks++;
+      } else if (progressPercent > 0) {
+        assigneeWorkload[assignee].inProgressTasks++;
+      }
+
+      if (task.end_date) {
+        const endDate = new Date(task.end_date);
+        endDate.setHours(0, 0, 0, 0);
+        if (endDate < today && progressPercent < 100) {
+          assigneeWorkload[assignee].overdueTasks++;
+        }
+      }
+    }
+
+    // 平均進捗率
+    const avgProgress = totalTasks > 0 ? totalProgress / totalTasks : 0;
+
+    // 予定進捗率の計算
+    let expectedProgress = 0;
+    let riskScore = 0;
+    let riskLevel = '🟢低';
+
+    if (projectStartDate && projectEndDate) {
+      const totalDuration = projectEndDate - projectStartDate;
+      const elapsedDuration = today - projectStartDate;
+
+      if (totalDuration > 0 && elapsedDuration >= 0) {
+        expectedProgress = (elapsedDuration / totalDuration) * 100;
+        expectedProgress = Math.min(100, Math.max(0, expectedProgress)); // 0-100%に制限
+
+        // リスクスコア計算
+        riskScore = expectedProgress - avgProgress;
+
+        // リスクレベル判定
+        if (riskScore > 20) {
+          riskLevel = '🔴高';
+        } else if (riskScore > 10) {
+          riskLevel = '🟡中';
+        } else {
+          riskLevel = '🟢低';
+        }
+      }
+    }
+
+    return {
+      projectName: projectName,
+      totalTasks: totalTasks,
+      completedTasks: completedTasks,
+      overdueTasks: overdueTasks,
+      avgProgress: Math.round(avgProgress * 10) / 10, // 小数点1桁
+      expectedProgress: Math.round(expectedProgress * 10) / 10,
+      riskScore: Math.round(riskScore * 10) / 10,
+      riskLevel: riskLevel,
+      assigneeWorkload: assigneeWorkload,
+      thisWeekDueTasks: thisWeekDueTasks,
+      nextWeekStartTasks: nextWeekStartTasks
+    };
+  } catch (error) {
+    Logger.log(`✗ プロジェクト健全性レポート生成エラー: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * 週次プロジェクトレポート送信
+ */
+function sendWeeklyReport() {
+  try {
+    Logger.log('=== 週次レポート生成開始 ===');
+
+    const today = new Date();
+    const sheetManager = new SheetManager();
+    const ss = sheetManager.ss;
+    const allSheets = ss.getSheets();
+
+    const ganttSheets = allSheets.filter(sheet => {
+      const name = sheet.getName();
+      return name.match(/^\d{1,4}_.+$/);
+    });
+
+    if (ganttSheets.length === 0) {
+      Logger.log('⚠ Ganttシートが見つかりませんでした。');
+      return;
+    }
+
+    const reports = [];
+    let totalProjects = 0;
+    let totalTasks = 0;
+    let totalCompleted = 0;
+    let totalOverdue = 0;
+    let highRiskProjects = 0;
+    let mediumRiskProjects = 0;
+    let lowRiskProjects = 0;
+
+    // 各プロジェクトのレポート生成
+    for (const ganttSheet of ganttSheets) {
+      try {
+        const projectData = sheetManager.readProjectDataFromSheet(ganttSheet);
+        if (!projectData) continue;
+
+        const report = generateProjectHealthReport(projectData, today);
+        reports.push(report);
+
+        totalProjects++;
+        totalTasks += report.totalTasks;
+        totalCompleted += report.completedTasks;
+        totalOverdue += report.overdueTasks;
+
+        if (report.riskLevel === '🔴高') {
+          highRiskProjects++;
+        } else if (report.riskLevel === '🟡中') {
+          mediumRiskProjects++;
+        } else {
+          lowRiskProjects++;
+        }
+      } catch (error) {
+        Logger.log(`✗ レポート生成エラー (${ganttSheet.getName()}): ${error.message}`);
+      }
+    }
+
+    // 週次サマリー
+    const overallProgress = totalTasks > 0
+      ? Math.round((totalCompleted / totalTasks) * 100)
+      : 0;
+
+    let summaryText = `**📊 週次プロジェクトレポート**\n\n`;
+    summaryText += `**全体サマリー**\n`;
+    summaryText += `• プロジェクト数: ${totalProjects}件\n`;
+    summaryText += `• 全タスク数: ${totalTasks}件\n`;
+    summaryText += `• 完了タスク: ${totalCompleted}件 (${overallProgress}%)\n`;
+    summaryText += `• 期日切れ: ${totalOverdue}件\n`;
+    summaryText += `• リスク状況: 🔴${highRiskProjects}件 / 🟡${mediumRiskProjects}件 / 🟢${lowRiskProjects}件\n\n`;
+
+    // プロジェクト別詳細（リスク高い順）
+    const sortedReports = reports.sort((a, b) => {
+      const riskOrder = { '🔴高': 3, '🟡中': 2, '🟢低': 1 };
+      return riskOrder[b.riskLevel] - riskOrder[a.riskLevel];
+    });
+
+    summaryText += `**プロジェクト別状況**\n`;
+    for (const report of sortedReports.slice(0, 10)) {
+      const progressPercent = report.totalTasks > 0
+        ? Math.round((report.completedTasks / report.totalTasks) * 100)
+        : 0;
+
+      summaryText += `\n${report.riskLevel} **${report.projectName}**\n`;
+      summaryText += `  進捗: ${progressPercent}% (${report.completedTasks}/${report.totalTasks}件)`;
+
+      if (report.overdueTasks > 0) {
+        summaryText += ` | 期日切れ: ${report.overdueTasks}件`;
+      }
+
+      if (report.thisWeekDueTasks.length > 0) {
+        summaryText += ` | 今週期限: ${report.thisWeekDueTasks.length}件`;
+      }
+
+      summaryText += `\n`;
+    }
+
+    if (sortedReports.length > 10) {
+      summaryText += `\n... 他${sortedReports.length - 10}件のプロジェクト\n`;
+    }
+
+    // 今週期限・来週開始のタスク集計
+    const allThisWeekDueTasks = [];
+    const allNextWeekStartTasks = [];
+
+    for (const report of reports) {
+      for (const task of report.thisWeekDueTasks) {
+        allThisWeekDueTasks.push({
+          projectName: report.projectName,
+          ...task
+        });
+      }
+
+      for (const task of report.nextWeekStartTasks) {
+        allNextWeekStartTasks.push({
+          projectName: report.projectName,
+          ...task
+        });
+      }
+    }
+
+    // 今週期限タスク
+    if (allThisWeekDueTasks.length > 0) {
+      summaryText += `\n**📅 今週完了予定タスク (${allThisWeekDueTasks.length}件)**\n`;
+
+      for (const task of allThisWeekDueTasks.slice(0, 10)) {
+        const taskName = task.task_name || task.task_id;
+        const endDate = new Date(task.end_date);
+        const dateStr = `${endDate.getMonth() + 1}/${endDate.getDate()}`;
+
+        summaryText += `• ${taskName} (${task.projectName}) - ${dateStr}\n`;
+      }
+
+      if (allThisWeekDueTasks.length > 10) {
+        summaryText += `... 他${allThisWeekDueTasks.length - 10}件\n`;
+      }
+    }
+
+    // 来週開始タスク
+    if (allNextWeekStartTasks.length > 0) {
+      summaryText += `\n**🚀 来週開始予定タスク (${allNextWeekStartTasks.length}件)**\n`;
+
+      for (const task of allNextWeekStartTasks.slice(0, 10)) {
+        const taskName = task.task_name || task.task_id;
+        const startDate = new Date(task.start_date);
+        const dateStr = `${startDate.getMonth() + 1}/${startDate.getDate()}`;
+
+        summaryText += `• ${taskName} (${task.projectName}) - ${dateStr}\n`;
+      }
+
+      if (allNextWeekStartTasks.length > 10) {
+        summaryText += `... 他${allNextWeekStartTasks.length - 10}件\n`;
+      }
+    }
+
+    // Discord通知送信
+    const payload = {
+      embeds: [{
+        title: '📊 週次プロジェクトレポート',
+        description: summaryText,
+        color: highRiskProjects > 0 ? 0xFF6B6B : (mediumRiskProjects > 0 ? 0xFFA726 : 0x66BB6A),
+        footer: { text: `生成日時: ${today.toLocaleDateString('ja-JP')}` },
+        timestamp: new Date().toISOString()
+      }]
+    };
+
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(CONFIG.DISCORD_WEBHOOK_URL, options);
+    Logger.log(`✓ 週次レポート送信完了: ${response.getResponseCode()}`);
+    Logger.log(`✓ ${totalProjects}件のプロジェクトをレポート`);
+
+  } catch (error) {
+    Logger.log('✗ 週次レポート生成エラー: ' + error.message);
+    sendDiscordNotification(
+      `週次レポート生成中にエラーが発生しました。\n\nエラー内容: ${error.message}`,
+      true
+    );
+    throw error;
+  }
+}
+
+/**
+ * 月次プロジェクトレポート送信
+ */
+function sendMonthlyReport() {
+  try {
+    Logger.log('=== 月次レポート生成開始 ===');
+
+    const today = new Date();
+    const sheetManager = new SheetManager();
+    const ss = sheetManager.ss;
+    const allSheets = ss.getSheets();
+
+    const ganttSheets = allSheets.filter(sheet => {
+      const name = sheet.getName();
+      return name.match(/^\d{1,4}_.+$/);
+    });
+
+    if (ganttSheets.length === 0) {
+      Logger.log('⚠ Ganttシートが見つかりませんでした。');
+      return;
+    }
+
+    const reports = [];
+    let totalProjects = 0;
+    let totalTasks = 0;
+    let totalCompleted = 0;
+    let totalOverdue = 0;
+    let highRiskProjects = 0;
+    let mediumRiskProjects = 0;
+    let lowRiskProjects = 0;
+
+    // 先月・今月の範囲を計算
+    const thisMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    thisMonthStart.setHours(0, 0, 0, 0);
+
+    const thisMonthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    thisMonthEnd.setHours(23, 59, 59, 999);
+
+    const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    lastMonthStart.setHours(0, 0, 0, 0);
+
+    const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+    lastMonthEnd.setHours(23, 59, 59, 999);
+
+    let lastMonthCompletedCount = 0;
+    let thisMonthTargetCount = 0;
+
+    // 各プロジェクトのレポート生成
+    for (const ganttSheet of ganttSheets) {
+      try {
+        const projectData = sheetManager.readProjectDataFromSheet(ganttSheet);
+        if (!projectData) continue;
+
+        const report = generateProjectHealthReport(projectData, today);
+        reports.push(report);
+
+        totalProjects++;
+        totalTasks += report.totalTasks;
+        totalCompleted += report.completedTasks;
+        totalOverdue += report.overdueTasks;
+
+        if (report.riskLevel === '🔴高') {
+          highRiskProjects++;
+        } else if (report.riskLevel === '🟡中') {
+          mediumRiskProjects++;
+        } else {
+          lowRiskProjects++;
+        }
+
+        // 先月完了タスクと今月目標タスクのカウント
+        for (const task of projectData.tasks) {
+          const progress = task.progress || 0;
+          const progressPercent = progress <= 1 ? progress * 100 : progress;
+
+          // 先月完了したタスク（先月中に100%になったもの）
+          if (progressPercent >= 100 && task.end_date) {
+            const endDate = new Date(task.end_date);
+            if (endDate >= lastMonthStart && endDate <= lastMonthEnd) {
+              lastMonthCompletedCount++;
+            }
+          }
+
+          // 今月期限のタスク（未完了）
+          if (progressPercent < 100 && task.end_date) {
+            const endDate = new Date(task.end_date);
+            if (endDate >= thisMonthStart && endDate <= thisMonthEnd) {
+              thisMonthTargetCount++;
+            }
+          }
+        }
+
+      } catch (error) {
+        Logger.log(`✗ レポート生成エラー (${ganttSheet.getName()}): ${error.message}`);
+      }
+    }
+
+    // 月次サマリー
+    const overallProgress = totalTasks > 0
+      ? Math.round((totalCompleted / totalTasks) * 100)
+      : 0;
+
+    let summaryText = `**📊 月次プロジェクトレポート**\n\n`;
+    summaryText += `**全体サマリー**\n`;
+    summaryText += `• プロジェクト数: ${totalProjects}件\n`;
+    summaryText += `• 全タスク数: ${totalTasks}件\n`;
+    summaryText += `• 完了タスク: ${totalCompleted}件 (${overallProgress}%)\n`;
+    summaryText += `• 期日切れ: ${totalOverdue}件\n`;
+    summaryText += `• リスク状況: 🔴${highRiskProjects}件 / 🟡${mediumRiskProjects}件 / 🟢${lowRiskProjects}件\n\n`;
+
+    // 月次固有情報
+    summaryText += `**月次統計**\n`;
+    summaryText += `• 先月完了タスク: ${lastMonthCompletedCount}件\n`;
+    summaryText += `• 今月目標タスク: ${thisMonthTargetCount}件\n\n`;
+
+    // プロジェクト別詳細（リスク高い順）
+    const sortedReports = reports.sort((a, b) => {
+      const riskOrder = { '🔴高': 3, '🟡中': 2, '🟢低': 1 };
+      return riskOrder[b.riskLevel] - riskOrder[a.riskLevel];
+    });
+
+    summaryText += `**プロジェクト別状況**\n`;
+    for (const report of sortedReports.slice(0, 10)) {
+      const progressPercent = report.totalTasks > 0
+        ? Math.round((report.completedTasks / report.totalTasks) * 100)
+        : 0;
+
+      summaryText += `\n${report.riskLevel} **${report.projectName}**\n`;
+      summaryText += `  進捗: ${progressPercent}% (${report.completedTasks}/${report.totalTasks}件)`;
+
+      if (report.overdueTasks > 0) {
+        summaryText += ` | 期日切れ: ${report.overdueTasks}件`;
+      }
+
+      summaryText += `\n`;
+    }
+
+    if (sortedReports.length > 10) {
+      summaryText += `\n... 他${sortedReports.length - 10}件のプロジェクト\n`;
+    }
+
+    // 今週期限・来週開始のタスク集計
+    const allThisWeekDueTasks = [];
+    const allNextWeekStartTasks = [];
+
+    for (const report of reports) {
+      for (const task of report.thisWeekDueTasks) {
+        allThisWeekDueTasks.push({
+          projectName: report.projectName,
+          ...task
+        });
+      }
+
+      for (const task of report.nextWeekStartTasks) {
+        allNextWeekStartTasks.push({
+          projectName: report.projectName,
+          ...task
+        });
+      }
+    }
+
+    // 今週期限タスク
+    if (allThisWeekDueTasks.length > 0) {
+      summaryText += `\n**📅 今週完了予定タスク (${allThisWeekDueTasks.length}件)**\n`;
+
+      for (const task of allThisWeekDueTasks.slice(0, 10)) {
+        const taskName = task.task_name || task.task_id;
+        const endDate = new Date(task.end_date);
+        const dateStr = `${endDate.getMonth() + 1}/${endDate.getDate()}`;
+
+        summaryText += `• ${taskName} (${task.projectName}) - ${dateStr}\n`;
+      }
+
+      if (allThisWeekDueTasks.length > 10) {
+        summaryText += `... 他${allThisWeekDueTasks.length - 10}件\n`;
+      }
+    }
+
+    // 来週開始タスク
+    if (allNextWeekStartTasks.length > 0) {
+      summaryText += `\n**🚀 来週開始予定タスク (${allNextWeekStartTasks.length}件)**\n`;
+
+      for (const task of allNextWeekStartTasks.slice(0, 10)) {
+        const taskName = task.task_name || task.task_id;
+        const startDate = new Date(task.start_date);
+        const dateStr = `${startDate.getMonth() + 1}/${startDate.getDate()}`;
+
+        summaryText += `• ${taskName} (${task.projectName}) - ${dateStr}\n`;
+      }
+
+      if (allNextWeekStartTasks.length > 10) {
+        summaryText += `... 他${allNextWeekStartTasks.length - 10}件\n`;
+      }
+    }
+
+    // Discord通知送信
+    const payload = {
+      embeds: [{
+        title: '📊 月次プロジェクトレポート',
+        description: summaryText,
+        color: highRiskProjects > 0 ? 0xFF6B6B : (mediumRiskProjects > 0 ? 0xFFA726 : 0x66BB6A),
+        footer: { text: `生成日時: ${today.toLocaleDateString('ja-JP')}` },
+        timestamp: new Date().toISOString()
+      }]
+    };
+
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(CONFIG.DISCORD_WEBHOOK_URL, options);
+    Logger.log(`✓ 月次レポート送信完了: ${response.getResponseCode()}`);
+    Logger.log(`✓ ${totalProjects}件のプロジェクトをレポート`);
+
+  } catch (error) {
+    Logger.log('✗ 月次レポート生成エラー: ' + error.message);
+    sendDiscordNotification(
+      `月次レポート生成中にエラーが発生しました。\n\nエラー内容: ${error.message}`,
+      true
+    );
+    throw error;
+  }
+}
+
+/**
+ * 見積精度計算
+ *
+ * @param {Object} projectData - プロジェクトデータ
+ * @return {Object} 精度分析レポート
+ */
+function calculateEstimationAccuracy(projectData) {
+  try {
+    const projectName = projectData.project_name || 'プロジェクト';
+    const tasks = projectData.tasks || [];
+
+    // 実績工数が記録されている完了タスクを抽出
+    const completedTasksWithActual = [];
+    const assigneeData = {};
+
+    for (const task of tasks) {
+      const progress = task.progress || 0;
+      const progressPercent = progress <= 1 ? progress * 100 : progress;
+
+      // 完了タスクかつ見積・実績の両方がある
+      if (progressPercent >= 100 && task.estimated_hours && task.actual_hours) {
+        const estimated = parseFloat(task.estimated_hours);
+        const actual = parseFloat(task.actual_hours);
+
+        if (estimated > 0 && actual > 0) {
+          // 誤差率計算: (実績 - 見積) / 見積 × 100
+          const errorRate = ((actual - estimated) / estimated) * 100;
+          const absoluteError = Math.abs(errorRate);
+
+          const taskAccuracy = {
+            task_id: task.task_id,
+            task_name: task.task_name || task.task_id,
+            assignee: task.assignee || '未割り当て',
+            estimated: estimated,
+            actual: actual,
+            errorRate: Math.round(errorRate * 10) / 10, // 小数点1桁
+            absoluteError: Math.round(absoluteError * 10) / 10
+          };
+
+          completedTasksWithActual.push(taskAccuracy);
+
+          // 担当者別データの集計
+          const assignee = task.assignee || '未割り当て';
+          if (!assigneeData[assignee]) {
+            assigneeData[assignee] = {
+              totalTasks: 0,
+              totalEstimated: 0,
+              totalActual: 0,
+              totalErrorRate: 0
+            };
+          }
+
+          assigneeData[assignee].totalTasks++;
+          assigneeData[assignee].totalEstimated += estimated;
+          assigneeData[assignee].totalActual += actual;
+          assigneeData[assignee].totalErrorRate += errorRate;
+        }
+      }
+    }
+
+    // プロジェクト全体の精度
+    let overallAccuracy = 0;
+    let totalEstimated = 0;
+    let totalActual = 0;
+
+    if (completedTasksWithActual.length > 0) {
+      for (const taskAcc of completedTasksWithActual) {
+        totalEstimated += taskAcc.estimated;
+        totalActual += taskAcc.actual;
+      }
+
+      if (totalEstimated > 0) {
+        overallAccuracy = ((totalActual - totalEstimated) / totalEstimated) * 100;
+        overallAccuracy = Math.round(overallAccuracy * 10) / 10;
+      }
+    }
+
+    // 担当者別精度
+    const assigneeAccuracy = [];
+    for (const assignee in assigneeData) {
+      const data = assigneeData[assignee];
+      const avgErrorRate = data.totalTasks > 0
+        ? data.totalErrorRate / data.totalTasks
+        : 0;
+
+      assigneeAccuracy.push({
+        assignee: assignee,
+        totalTasks: data.totalTasks,
+        totalEstimated: Math.round(data.totalEstimated * 10) / 10,
+        totalActual: Math.round(data.totalActual * 10) / 10,
+        avgErrorRate: Math.round(avgErrorRate * 10) / 10
+      });
+    }
+
+    // 誤差率順にソート
+    assigneeAccuracy.sort((a, b) => Math.abs(b.avgErrorRate) - Math.abs(a.avgErrorRate));
+
+    // 最も誤差が大きいタスク（上位5件）
+    const worstTasks = completedTasksWithActual
+      .sort((a, b) => b.absoluteError - a.absoluteError)
+      .slice(0, 5);
+
+    return {
+      projectName: projectName,
+      overallAccuracy: overallAccuracy,
+      completedTasksWithActual: completedTasksWithActual.length,
+      totalEstimated: Math.round(totalEstimated * 10) / 10,
+      totalActual: Math.round(totalActual * 10) / 10,
+      assigneeAccuracy: assigneeAccuracy,
+      worstTasks: worstTasks
+    };
+  } catch (error) {
+    Logger.log(`✗ 見積精度計算エラー: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * 見積精度レポート送信
+ */
+function sendEstimationAccuracyReport() {
+  try {
+    Logger.log('=== 見積精度レポート生成開始 ===');
+
+    const sheetManager = new SheetManager();
+    const ss = sheetManager.ss;
+    const allSheets = ss.getSheets();
+
+    const ganttSheets = allSheets.filter(sheet => {
+      const name = sheet.getName();
+      return name.match(/^\d{1,4}_.+$/);
+    });
+
+    if (ganttSheets.length === 0) {
+      Logger.log('⚠ Ganttシートが見つかりませんでした。');
+      return;
+    }
+
+    const accuracyReports = [];
+    let totalProjects = 0;
+    let totalTasksWithActual = 0;
+    let overallTotalEstimated = 0;
+    let overallTotalActual = 0;
+
+    const allAssigneeData = {};
+    const allWorstTasks = [];
+
+    // 各プロジェクトの精度分析
+    for (const ganttSheet of ganttSheets) {
+      try {
+        const projectData = sheetManager.readProjectDataFromSheet(ganttSheet);
+        if (!projectData) continue;
+
+        const accuracy = calculateEstimationAccuracy(projectData);
+
+        if (accuracy.completedTasksWithActual > 0) {
+          accuracyReports.push(accuracy);
+          totalProjects++;
+          totalTasksWithActual += accuracy.completedTasksWithActual;
+          overallTotalEstimated += accuracy.totalEstimated;
+          overallTotalActual += accuracy.totalActual;
+
+          // 担当者別データの統合
+          for (const assigneeAcc of accuracy.assigneeAccuracy) {
+            if (!allAssigneeData[assigneeAcc.assignee]) {
+              allAssigneeData[assigneeAcc.assignee] = {
+                totalTasks: 0,
+                totalEstimated: 0,
+                totalActual: 0
+              };
+            }
+
+            allAssigneeData[assigneeAcc.assignee].totalTasks += assigneeAcc.totalTasks;
+            allAssigneeData[assigneeAcc.assignee].totalEstimated += assigneeAcc.totalEstimated;
+            allAssigneeData[assigneeAcc.assignee].totalActual += assigneeAcc.totalActual;
+          }
+
+          // ワーストタスク収集
+          for (const worstTask of accuracy.worstTasks) {
+            allWorstTasks.push({
+              projectName: accuracy.projectName,
+              ...worstTask
+            });
+          }
+        }
+      } catch (error) {
+        Logger.log(`✗ 精度計算エラー (${ganttSheet.getName()}): ${error.message}`);
+      }
+    }
+
+    if (totalProjects === 0) {
+      Logger.log('⚠ 見積・実績の両方が記録されているタスクがありません。');
+      sendDiscordNotification('見積精度レポート: 分析対象のタスクがありません。', false);
+      return;
+    }
+
+    // 全体精度
+    const overallAccuracy = overallTotalEstimated > 0
+      ? ((overallTotalActual - overallTotalEstimated) / overallTotalEstimated) * 100
+      : 0;
+
+    // 担当者別精度の計算
+    const assigneeAccuracyList = [];
+    for (const assignee in allAssigneeData) {
+      const data = allAssigneeData[assignee];
+      const errorRate = data.totalEstimated > 0
+        ? ((data.totalActual - data.totalEstimated) / data.totalEstimated) * 100
+        : 0;
+
+      assigneeAccuracyList.push({
+        assignee: assignee,
+        totalTasks: data.totalTasks,
+        totalEstimated: Math.round(data.totalEstimated * 10) / 10,
+        totalActual: Math.round(data.totalActual * 10) / 10,
+        errorRate: Math.round(errorRate * 10) / 10
+      });
+    }
+
+    // 誤差率順にソート（絶対値）
+    assigneeAccuracyList.sort((a, b) => Math.abs(b.errorRate) - Math.abs(a.errorRate));
+
+    // ワーストタスク上位10件
+    const topWorstTasks = allWorstTasks
+      .sort((a, b) => b.absoluteError - a.absoluteError)
+      .slice(0, 10);
+
+    // Discord通知作成
+    let summaryText = `**📊 見積精度レポート**\n\n`;
+    summaryText += `**全体サマリー**\n`;
+    summaryText += `• 分析プロジェクト数: ${totalProjects}件\n`;
+    summaryText += `• 分析タスク数: ${totalTasksWithActual}件\n`;
+    summaryText += `• 総見積工数: ${Math.round(overallTotalEstimated * 10) / 10}h\n`;
+    summaryText += `• 総実績工数: ${Math.round(overallTotalActual * 10) / 10}h\n`;
+    summaryText += `• 全体精度: ${Math.round(overallAccuracy * 10) / 10}% ${overallAccuracy > 0 ? '(超過)' : overallAccuracy < 0 ? '(余裕)' : ''}\n\n`;
+
+    // プロジェクト別精度（誤差大きい順）
+    const sortedProjects = accuracyReports.sort((a, b) =>
+      Math.abs(b.overallAccuracy) - Math.abs(a.overallAccuracy)
+    );
+
+    summaryText += `**プロジェクト別精度**\n`;
+    for (const report of sortedProjects.slice(0, 10)) {
+      summaryText += `\n**${report.projectName}**\n`;
+      summaryText += `  見積: ${report.totalEstimated}h / 実績: ${report.totalActual}h\n`;
+      summaryText += `  精度: ${report.overallAccuracy}% (${report.completedTasksWithActual}タスク)\n`;
+    }
+
+    if (sortedProjects.length > 10) {
+      summaryText += `\n... 他${sortedProjects.length - 10}件のプロジェクト\n`;
+    }
+
+    // 担当者別精度
+    if (assigneeAccuracyList.length > 0) {
+      summaryText += `\n**担当者別精度**\n`;
+
+      for (const assigneeAcc of assigneeAccuracyList.slice(0, 10)) {
+        summaryText += `\n**${assigneeAcc.assignee}**\n`;
+        summaryText += `  見積: ${assigneeAcc.totalEstimated}h / 実績: ${assigneeAcc.totalActual}h\n`;
+        summaryText += `  精度: ${assigneeAcc.errorRate}% (${assigneeAcc.totalTasks}タスク)\n`;
+      }
+
+      if (assigneeAccuracyList.length > 10) {
+        summaryText += `\n... 他${assigneeAccuracyList.length - 10}人の担当者\n`;
+      }
+    }
+
+    // 見積誤差が大きいタスク
+    if (topWorstTasks.length > 0) {
+      summaryText += `\n**⚠️ 見積誤差の大きいタスク**\n`;
+
+      for (const worstTask of topWorstTasks.slice(0, 5)) {
+        const sign = worstTask.errorRate > 0 ? '+' : '';
+        summaryText += `\n• **${worstTask.task_name}** (${worstTask.projectName})\n`;
+        summaryText += `  見積: ${worstTask.estimated}h / 実績: ${worstTask.actual}h / 誤差: ${sign}${worstTask.errorRate}%\n`;
+      }
+
+      if (topWorstTasks.length > 5) {
+        summaryText += `\n... 他${topWorstTasks.length - 5}件のタスク\n`;
+      }
+    }
+
+    // Discord通知送信
+    const payload = {
+      embeds: [{
+        title: '📊 見積精度レポート',
+        description: summaryText,
+        color: Math.abs(overallAccuracy) > 20 ? 0xFF6B6B : (Math.abs(overallAccuracy) > 10 ? 0xFFA726 : 0x66BB6A),
+        footer: { text: `分析対象: ${totalTasksWithActual}件のタスク` },
+        timestamp: new Date().toISOString()
+      }]
+    };
+
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(CONFIG.DISCORD_WEBHOOK_URL, options);
+    Logger.log(`✓ 見積精度レポート送信完了: ${response.getResponseCode()}`);
+    Logger.log(`✓ ${totalProjects}件のプロジェクト、${totalTasksWithActual}件のタスクを分析`);
+
+  } catch (error) {
+    Logger.log('✗ 見積精度レポート生成エラー: ' + error.message);
+    sendDiscordNotification(
+      `見積精度レポート生成中にエラーが発生しました。\n\nエラー内容: ${error.message}`,
+      true
+    );
+    throw error;
+  }
+}
+
+// ============================================
+// テスト関数
+// ============================================
+
+/**
+ * 依存タスクブロッカー検知機能のテスト
+ *
+ * 実行方法: GASエディタでこの関数を選択して実行
+ * 結果確認: ログビューアとDiscordチャンネルで確認
+ */
+/**
+ * 日付フォーマット用ヘルパー関数
+ * @param {Date} date - フォーマット対象の日付
+ * @return {string} YYYY-MM-DD形式の文字列
+ */
+function formatDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// ============================================
+// 変更検知機能（パフォーマンス最適化）
+// ============================================
+
+/**
+ * Ganttシートの最終同期日時を取得
+ * @param {Sheet} sheet - Ganttシート
+ * @returns {Date|null} - 最終同期日時（未同期の場合はnull）
+ */
+function getLastSyncTime(sheet) {
+  try {
+    const props = PropertiesService.getDocumentProperties();
+    const key = `lastSync_${sheet.getName()}`;
+    const value = props.getProperty(key);
+    return value ? new Date(value) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Ganttシートの最終同期日時を記録
+ * @param {Sheet} sheet - Ganttシート
+ */
+function setLastSyncTime(sheet) {
+  try {
+    const props = PropertiesService.getDocumentProperties();
+    const key = `lastSync_${sheet.getName()}`;
+    const now = new Date().toISOString();
+    props.setProperty(key, now);
+  } catch (error) {
+    Logger.log(`⚠ 最終同期日時の記録失敗: ${sheet.getName()} - ${error.message}`);
+  }
+}
+
+/**
+ * Ganttシートが同期が必要かどうか判定
+ * @param {Sheet} sheet - Ganttシート
+ * @param {number} minIntervalMinutes - 最小同期間隔（分）デフォルト5分
+ * @returns {boolean} - 同期が必要ならtrue
+ */
+function shouldSyncSheet(sheet, minIntervalMinutes = 5) {
+  const lastSyncTime = getLastSyncTime(sheet);
+
+  // 初回同期（最終同期日時が未設定）
+  if (!lastSyncTime) {
+    return true;
+  }
+
+  // 現在時刻との差分を計算（分単位）
+  const now = new Date();
+  const diffMinutes = (now - lastSyncTime) / (1000 * 60);
+
+  // 最小間隔を経過していれば同期が必要
+  return diffMinutes >= minIntervalMinutes;
+}

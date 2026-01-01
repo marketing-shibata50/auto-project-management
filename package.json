@@ -1,0 +1,43 @@
+{
+  "name": "automatic-gantt-chart-creation",
+  "version": "1.0.0",
+  "description": "Claude Code対話型Ganttチャート自動生成システム",
+  "main": "src/gantt-helper.ts",
+  "scripts": {
+    "gantt:init": "ts-node src/gantt-helper.ts init",
+    "gantt:save": "ts-node src/gantt-helper.ts save",
+    "gantt:auth": "ts-node src/gantt-helper.ts auth",
+    "gantt:status": "ts-node src/gantt-helper.ts status",
+    "gantt:upload": "ts-node src/upload-to-drive.ts",
+    "build": "tsc",
+    "dev": "ts-node src/gantt-helper.ts",
+    "gas:login": "npx clasp login",
+    "gas:logout": "npx clasp logout",
+    "gas:pull": "npx clasp pull",
+    "gas:push": "npx clasp push",
+    "gas:push:watch": "npx clasp push --watch",
+    "gas:open": "npx clasp open",
+    "gas:logs": "npx clasp logs",
+    "gas:logs:watch": "npx clasp logs --watch",
+    "gas:version": "npx clasp version",
+    "gas:versions": "npx clasp versions"
+  },
+  "keywords": [
+    "gantt",
+    "project-management",
+    "google-drive",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "googleapis": "^128.0.0"
+  },
+  "devDependencies": {
+    "@google/clasp": "^3.1.3",
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

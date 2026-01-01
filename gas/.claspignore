@@ -1,0 +1,19 @@
+# Documentation
+README.md
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+*.test.gs
+*.spec.gs
+
+# Local config backups
+*.backup.gs
+GanttRenderer.gs.gs

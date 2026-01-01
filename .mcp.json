@@ -1,0 +1,92 @@
+{
+    "mcpServers": {
+        "adobe-xd": {
+            "command": "node",
+            "args": [
+                "/Users/takashishibata/Desktop/BEELZEBUB/adobe-xd-mcp/dist/index.js"
+            ]
+        },
+        "serena": {
+            "type": "stdio",
+            "command": "uvx",
+            "args": [
+                "--from",
+                "git+https://github.com/oraios/serena",
+                "serena",
+                "start-mcp-server",
+                "--context",
+                "ide-assistant",
+                "--project",
+                "/Users/takashishibata/Desktop/BEELZEBUB"
+            ],
+            "env": {}
+        },
+        "playwright": {
+            "command": "npx",
+            "args": [
+                "@playwright/mcp@latest"
+            ]
+        },
+        "chrome-devtools": {
+            "command": "npx",
+            "args": ["chrome-devtools-mcp@latest"]
+        },
+        "context7": {
+            "type": "stdio",
+            "command": "npx",
+            "args": [
+                "--yes",
+                "@upstash/context7-mcp"
+            ],
+            "env": {
+                "CONTEXT7_API_KEY": "ctx7sk-d154076d-c508-42e7-b5cd-6c9c481b3954"
+            }
+        },
+        "codex": {
+            "type": "stdio",
+            "command": "codex",
+            "args": ["mcp"]
+        },
+        "mcp-gemini-cli": {
+            "command": "npx",
+            "args": ["mcp-gemini-cli", "--allow-npx"]
+        },
+        "file-system": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "/Users/takashishibata/Desktop/BEELZEBUB"
+            ]
+        },
+        "github": {
+            "type": "http",
+            "url": "https://api.githubcopilot.com/mcp",
+            "headers": {
+                "Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"
+            }
+        },
+        "supabase": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@supabase/mcp-server-supabase@latest"
+            ],
+            "env": {
+                "SUPABASE_ACCESS_TOKEN": "${SUPABASE_ACCESS_TOKEN}",
+                "SUPABASE_PROJECT_REF": "${SUPABASE_PROJECT_REF}"
+            }
+        },
+        "todoist-mcp": {
+            "command": "node",
+            "args": ["/Users/takashishibata/.claude/todoist-mcp/build/index.js"],
+            "env": {
+                "TODOIST_API_KEY": "dcbc9cfc8aa52fce62a50a09e3ccecd0200faf15"
+            }
+        },
+        "notionMCP": {
+            "command": "npx",
+            "args": ["-y", "mcp-remote", "https://mcp.notion.com/mcp"]
+        }
+    }
+}  
