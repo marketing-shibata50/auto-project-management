@@ -1,14 +1,16 @@
-# インストールガイド
+# インストールガイド - 完全セットアップ手順
 
-Claude Code対話型Ganttチャート自動生成システムのセットアップ手順を説明します。
+> **クイックスタート**: 基本的な使い方は [README.md](README.md) を参照してください。このガイドは詳細なセットアップ手順を提供します。
+
+Claude Code対話型Ganttチャート自動生成システムの完全セットアップ手順を説明します。
 
 ## 📋 前提条件
 
-- **Node.js**: v20.x以上
-- **npm**: v10.x以上
+- **Node.js**: v20.x以上（`node --version`で確認）
+- **npm**: v10.x以上（`npm --version`で確認）
 - **Claude Code CLI**: インストール済み
 - **Google Cloud Platform**: アカウント作成済み
-- **Google Apps Script**: 基本的な知識
+- **Google Apps Script**: 基本的な知識（推奨）
 
 ## 🚀 セットアップ手順
 
@@ -181,6 +183,79 @@ Discord通知を有効にする場合:
 4. `.env`の`DISCORD_WEBHOOK_URL`に設定
 5. `Config.gs`の`DISCORD_WEBHOOK_URL`にも設定
 
+### 10. clasp を使った自動デプロイ（オプション）
+
+手動でApps Scriptエディタにコードをコピーする代わりに、claspを使ってコマンドラインから自動デプロイできます。
+
+#### 10.1. claspのインストール
+
+```bash
+npm install -g @google/clasp
+```
+
+#### 10.2. Google認証
+
+```bash
+clasp login
+```
+
+ブラウザが開くので、Googleアカウントでログインして認証します。
+
+#### 10.3. 新規GASプロジェクト作成
+
+```bash
+# スプレッドシート紐付け型のプロジェクトを作成
+clasp create --title "Gantt Chart Generator" --type sheets
+```
+
+または、既存のGASプロジェクトを使用する場合:
+
+```bash
+# Apps Scriptエディタで「プロジェクトの設定」からスクリプトIDを取得
+clasp clone <スクリプトID>
+```
+
+#### 10.4. .clasp.json 設定
+
+プロジェクトルートに`.clasp.json`を作成:
+
+```json
+{
+  "scriptId": "your-script-id-here",
+  "rootDir": "./gas"
+}
+```
+
+**⚠️ 注意**: `.clasp.json`はスクリプトIDを含むため、`.gitignore`で除外されています。
+
+#### 10.5. コードをプッシュ
+
+```bash
+# gas/ディレクトリ内のコードをGASプロジェクトにアップロード
+clasp push
+```
+
+#### 10.6. ブラウザで開く
+
+```bash
+# Apps Scriptエディタをブラウザで開く
+clasp open
+```
+
+#### 10.7. トリガー設定
+
+claspでコードをプッシュした後、Apps Scriptエディタで時間トリガーを設定してください（上記のセクション7を参照）。
+
+#### clasp コマンド一覧
+
+| コマンド | 説明 |
+|---------|------|
+| `clasp push` | ローカルコード → GASにアップロード |
+| `clasp pull` | GASコード → ローカルにダウンロード |
+| `clasp open` | ブラウザでGASエディタを開く |
+| `clasp logs` | 実行ログを表示 |
+| `clasp deploy` | デプロイメント作成 |
+
 ## ✅ 動作確認
 
 ### 1. Claude Codeで動作確認
@@ -221,47 +296,265 @@ npm run gantt:save
 
 ## 🛠️ トラブルシューティング
 
-### Q1. OAuth認証がうまくいかない
+### セットアップ関連
+
+#### Q1. `npm install` でエラーが発生する
+
+**A**: Node.jsのバージョンを確認してください。
+
+```bash
+node --version  # v20.x.x 以上を確認
+npm --version   # v10.x.x 以上を確認
+```
+
+古いバージョンの場合は [Node.js公式サイト](https://nodejs.org/) から最新LTS版をインストールしてください。
+
+#### Q2. OAuth認証がうまくいかない
+
+**A**: 以下を段階的に確認:
+
+1. **Google Drive APIが有効化されているか**:
+   - [Google Cloud Console](https://console.cloud.google.com/apis/library/drive.googleapis.com) で確認
+   - 「有効」と表示されていればOK
+
+2. **`.env`ファイルの設定が正確か**:
+   ```bash
+   cat .env | grep GOOGLE_  # 設定値を確認
+   ```
+   - クライアントID、シークレットにスペースや改行が含まれていないか確認
+   - リダイレクトURIが正確に `http://localhost:19204/oauth2callback` か確認
+
+3. **OAuth同意画面が設定されているか**:
+   - Google Cloud Consoleで「OAuth同意画面」を確認
+   - テストユーザーに自分のGoogleアカウントが追加されているか確認
+
+4. **認証トークンを再取得**:
+   ```bash
+   rm .google-token.json  # 古いトークンを削除
+   npm run gantt:auth     # 再認証
+   ```
+
+#### Q3. JSONファイルが生成されない
+
+**A**: 以下の順で確認:
+
+1. **TypeScriptがビルドされているか**:
+   ```bash
+   npm run build
+   # dist/ フォルダが生成されることを確認
+   ls -la dist/
+   ```
+
+2. **ヘルパースクリプトが実行されているか**:
+   ```bash
+   npm run gantt:save
+   ```
+   エラーメッセージが表示される場合は内容を確認
+
+3. **outputs/ フォルダの権限**:
+   ```bash
+   ls -la outputs/  # フォルダの存在と権限を確認
+   mkdir -p outputs # 存在しない場合は作成
+   ```
+
+#### Q4. Google Driveアップロードがスキップされる
 
 **A**: 以下を確認:
-1. Google Drive APIが有効化されているか
-2. `.env`のクライアントID・シークレットが正確か
-3. リダイレクトURIが正確に設定されているか
 
-### Q2. JSONファイルが生成されない
+1. **`.env`に`GOOGLE_DRIVE_FOLDER_ID`が設定されているか**:
+   ```bash
+   grep GOOGLE_DRIVE_FOLDER_ID .env
+   ```
+
+2. **認証トークンが存在するか**:
+   ```bash
+   ls -la .google-token.json
+   ```
+   存在しない場合は `npm run gantt:auth` を実行
+
+3. **フォルダIDが正しいか**:
+   - Google DriveでフォルダのURLを確認
+   - URL形式: `https://drive.google.com/drive/folders/{FOLDER_ID}`
+   - `{FOLDER_ID}` 部分が `.env` と一致しているか確認
+
+### GAS関連
+
+#### Q5. Ganttチャートが自動生成されない
+
+**A**: 以下を段階的に確認:
+
+1. **時間トリガーが正しく設定されているか**:
+   - Apps Scriptエディタで「トリガー」アイコン（⏰）をクリック
+   - `checkForNewJsonFiles` 関数のトリガーが存在するか確認
+   - 間隔が「1分おき」に設定されているか確認
+
+2. **`Config.gs`の`DRIVE_FOLDER_ID`が正しいか**:
+   ```javascript
+   // Config.gs を開いて確認
+   DRIVE_FOLDER_ID: 'あなたのフォルダID',  // .envと同じ値
+   ```
+
+3. **JSONファイルが正しいフォルダにアップロードされているか**:
+   - Google Driveで該当フォルダを開く
+   - JSONファイルが存在するか確認
+   - ファイル名が `processed_` で始まっていないか確認
+
+4. **GASの実行ログを確認**:
+   - Apps Scriptエディタで「実行ログ」を開く
+   - `checkForNewJsonFiles` の実行ログを確認
+   - エラーメッセージがあれば内容を確認
+
+5. **手動実行でテスト**:
+   - Apps Scriptエディタで `testGenerateGantt()` 関数を実行
+   - エラーが出る場合は実行ログで詳細を確認
+
+#### Q6. 処理済みファイルが増えすぎた場合
+
+**A**: 処理済みファイル（`processed_` で始まるファイル）は手動で削除またはアーカイブできます:
+
+1. Google Driveで該当フォルダを開く
+2. `processed_` で始まるファイルを選択（複数選択可能）
+3. 別のフォルダに移動するか削除する
+
+**推奨**: 定期的にアーカイブフォルダを作成して移動することで、メインフォルダを整理できます。
+
+#### Q7. 特定のJSONファイルだけ処理したい
+
+**A**: 手動実行を使用:
+
+1. Google DriveでJSONファイルを右クリック → 「リンクを取得」
+2. URLからファイルIDを取得（`/d/` と `/view` の間の文字列）
+3. Apps Scriptエディタで `Code.gs` を開く
+4. `processJsonFile('ファイルID')` を直接実行
+
+### Todoist統合関連
+
+#### Q8. Todoistタスクが同期されない
 
 **A**: 以下を確認:
-1. `npm run build`を実行したか
-2. TypeScriptのコンパイルエラーがないか
-3. `npm run gantt:save`を実行したか
 
-### Q3. Ganttチャートが自動生成されない
+1. **`Config.gs`の`TODOIST_API_KEY`が正しく設定されているか**:
+   - [Todoist設定](https://todoist.com/app/settings/integrations/developer) でAPIトークンを確認
+   - `Config.gs`に正しく貼り付けられているか確認
+   - APIキーにスペースや改行が含まれていないか確認
+
+2. **トリガーが正しく設定されているか**:
+   - Apps Scriptエディタで「トリガー」アイコン（⏰）をクリック
+   - `syncTodoistTasks` 関数のトリガーが存在するか確認
+
+3. **手動実行でテスト**:
+   ```javascript
+   // Apps Scriptエディタで実行
+   testTodoistIntegration()
+   ```
+   実行ログでエラーメッセージを確認
+
+4. **Inboxプロジェクトが存在するか**:
+   - Todoistアプリで「Inbox」プロジェクトが存在するか確認
+   - プロジェクト名が正確に「Inbox」であることを確認（大文字小文字区別）
+
+5. **API接続をテスト**:
+   ```javascript
+   // Apps Scriptエディタで以下を実行
+   function testTodoistAPI() {
+     const url = 'https://api.todoist.com/rest/v2/projects';
+     const options = {
+       'method': 'get',
+       'headers': {
+         'Authorization': 'Bearer ' + CONFIG.TODOIST_API_KEY
+       }
+     };
+     const response = UrlFetchApp.fetch(url, options);
+     Logger.log(response.getContentText());
+   }
+   ```
+
+### Discord通知関連
+
+#### Q9. 期日切れタスク通知が送信されない
 
 **A**: 以下を確認:
-1. 時間トリガーが正しく設定されているか
-2. `Config.gs`の`DRIVE_FOLDER_ID`が正しいか
-3. Apps Scriptの実行ログでエラーがないか
-4. JSONファイルが正しいフォルダにアップロードされているか
 
-### Q4. Todoistタスクが同期されない
+1. **Discord Webhook URLが正しく設定されているか**:
+   - `Config.gs`の`DISCORD_WEBHOOK_URL`が正しいか確認
+   - URLが `https://discord.com/api/webhooks/...` の形式か確認
+
+2. **期日切れタスクが存在するか**:
+   - 「期日切れタスク」シートを開く
+   - 実際に期日切れタスクが存在するか確認
+
+3. **トリガーが正しく設定されているか**:
+   - `sendOverdueTasksNotification` 関数の日タイマーが設定されているか確認
+
+4. **手動実行でテスト**:
+   ```javascript
+   // Apps Scriptエディタで実行
+   testOverdueTasksFeature()
+   ```
+
+5. **Webhook URLをテスト**:
+   ```javascript
+   // Apps Scriptエディタで以下を実行
+   function testDiscordWebhook() {
+     const payload = {
+       'content': 'テスト通知: GASからの接続確認'
+     };
+     const options = {
+       'method': 'post',
+       'contentType': 'application/json',
+       'payload': JSON.stringify(payload)
+     };
+     UrlFetchApp.fetch(CONFIG.DISCORD_WEBHOOK_URL, options);
+   }
+   ```
+
+### clasp関連
+
+#### Q10. claspコマンドがエラーになる
 
 **A**: 以下を確認:
-1. `TODOIST_API_KEY`が正しく設定されているか
-2. Todoistトリガーが正しく設定されているか
-3. `testTodoistIntegration()`関数で手動テストする
 
-## 📚 次のステップ
+1. **claspがインストールされているか**:
+   ```bash
+   clasp --version
+   ```
+   エラーが出る場合は再インストール:
+   ```bash
+   npm install -g @google/clasp
+   ```
 
-- [README.md](README.md) - 詳細な使い方
-- [gas/README.md](gas/README.md) - GAS側の詳細ドキュメント
-- [DESIGN.md](DESIGN.md) - システム設計ドキュメント
+2. **Google認証が完了しているか**:
+   ```bash
+   clasp login
+   ```
 
-## 🆘 サポート
+3. **`.clasp.json`が正しく設定されているか**:
+   ```bash
+   cat .clasp.json
+   ```
+   `scriptId`と`rootDir`が正しく設定されているか確認
 
-問題が発生した場合:
-1. [Issues](https://github.com/{your-username}/claude-gantt-chart/issues)で報告
-2. トラブルシューティングセクションを確認
-3. Apps Scriptの実行ログを確認
+4. **スクリプトIDが正しいか**:
+   - Apps Scriptエディタで「プロジェクトの設定」を開く
+   - スクリプトIDが`.clasp.json`と一致しているか確認
+
+## 📚 関連ドキュメント
+
+- **[README.md](README.md)** - プロジェクト概要、クイックスタート、基本的な使い方
+- **[gas/README.md](gas/README.md)** - GAS側の詳細ドキュメント、API仕様
+- **問題が発生した場合** - このページのトラブルシューティングセクションを参照
+
+## 🎯 セットアップ完了後
+
+セットアップが完了したら、[README.md](README.md) の「使い方」セクションを参照して、実際にプロジェクトを作成してみましょう。
+
+```bash
+# Claude Codeを起動
+claude code
+
+# 対話形式でプロジェクト作成
+> /gantt
+```
 
 ## 📝 ライセンス
 

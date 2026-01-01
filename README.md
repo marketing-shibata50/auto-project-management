@@ -60,117 +60,50 @@ Claude Codeとの対話でプロジェクトを設計し、JSONファイルを�
 
 ---
 
-## 🚀 セットアップ
+## 🚀 クイックスタート
 
-### 1. 依存関係のインストール
+**初めての方**: 詳細なセットアップ手順は [INSTALL.md](INSTALL.md) をご覧ください。
+
+### 3ステップでスタート
+
+#### ステップ1: 依存関係のインストール
 
 ```bash
 npm install
+npm run build
 ```
 
-### 2. 環境変数の設定
-
-`.env.example` をコピーして `.env` を作成：
+#### ステップ2: 環境変数の設定
 
 ```bash
 cp .env.example .env
+# .envファイルを編集してGoogle Drive設定を追加
 ```
 
-`.env` ファイルを編集して以下の値を設定：
-
+**最小限の設定項目**:
 ```env
-# Google Drive設定
 GOOGLE_DRIVE_FOLDER_ID=your_folder_id_here
 GOOGLE_CLIENT_ID=your_client_id_here
 GOOGLE_CLIENT_SECRET=your_client_secret_here
-GOOGLE_REDIRECT_URI=http://localhost:19204/oauth2callback
-
-# スプレッドシートID（Discord通知用、オプション）
-GOOGLE_SPREADSHEET_ID=your_spreadsheet_id_here
-
-# Discord通知設定（オプション）
-DISCORD_WEBHOOK_URL=your_webhook_url_here
-
-# Todoist API設定（オプション）
-TODOIST_API_KEY=your_todoist_api_token_here
 ```
 
-### 3. Google OAuth認証の初回セットアップ
+> **📝 詳細**: Google Cloud設定、OAuth認証の完全ガイドは [INSTALL.md](INSTALL.md) を参照
 
-**Google Cloud Consoleで認証情報を取得**:
-
-1. [Google Cloud Console](https://console.cloud.google.com/) にアクセス
-2. 新規プロジェクトを作成
-3. 「APIとサービス」→「ライブラリ」から以下のAPIを有効化：
-   - **Google Drive API**: https://console.cloud.google.com/apis/library/drive.googleapis.com
-4. 「APIとサービス」→「認証情報」
-5. 「OAuth 2.0 クライアントID」を作成
-   - アプリケーションの種類: デスクトップアプリ
-   - リダイレクトURI: `http://localhost:19204/oauth2callback`
-6. クライアントIDとクライアントシークレットを`.env`に設定
-
-**初回認証トークン取得**:
+#### ステップ3: 初回認証とGantt作成
 
 ```bash
-npm run gantt:auth  # 初回OAuth認証フロー
+# Google認証（初回のみ）
+npm run gantt:auth
+
+# Claude Codeでプロジェクト作成
+claude code
+> /gantt
+
+# JSONファイル生成・アップロード
+npm run gantt:save
 ```
 
-認証が完了すると `.google-token.json` が生成されます（.gitignoreに含まれます）。
-
-### 4. GAS側の時間トリガー設定
-
-**Google Apps ScriptにDRIVE_FOLDER_IDを設定**:
-
-1. Apps Scriptエディタを開く
-2. `Config.gs`を開く
-3. `DRIVE_FOLDER_ID`に`.env`と同じフォルダIDを設定：
-   ```javascript
-   DRIVE_FOLDER_ID: 'あなたのフォルダID',
-   ```
-
-**時間ベーストリガーを追加**:
-
-1. Apps Scriptエディタで左側の「トリガー」アイコン（⏰）をクリック
-2. 右下の「トリガーを追加」をクリック
-3. 以下のように設定：
-   - **実行する関数を選択**: `checkForNewJsonFiles`
-   - **イベントのソースを選択**: `時間主導型`
-   - **時間ベースのトリガーのタイプを選択**: `分ベースのタイマー`
-   - **時間の間隔を選択**: `1分おき`
-4. 「保存」をクリック
-
-これで、1分ごとにGoogle Driveフォルダをチェックし、新しいJSONファイルが見つかると自動的にGanttチャートが生成されます。
-
-**Todoist統合の追加設定（オプション）**:
-
-Todoistタスクを同期する場合、以下の追加トリガーを設定してください：
-
-1. **Todoistタスク同期トリガー**:
-   - **実行する関数**: `syncTodoistTasks`
-   - **イベントのソース**: `時間主導型`
-   - **時間ベースのトリガーのタイプ**: `分ベースのタイマー`
-   - **時間の間隔**: `30分おき` または `1時間おき`
-
-2. **期日切れタスク通知トリガー**:
-   - **実行する関数**: `sendOverdueTasksNotification`
-   - **イベントのソース**: `時間主導型`
-   - **時間ベースのトリガーのタイプ**: `日タイマー`
-   - **時刻**: `午前9時～10時`
-
-3. **Config.gsにTODOIST_API_KEYを設定**:
-   ```javascript
-   TODOIST_API_KEY: 'your_todoist_api_token_here',
-   ```
-
-   Todoist APIトークンの取得方法:
-   - [Todoist設定](https://todoist.com/app/settings/integrations/developer) → 「開発者」タブ
-   - 「APIトークン」をコピー
-
-### 5. ビルド（TypeScript → JavaScript変換）
-
-```bash
-npm run build
-```
+> **📝 GAS連携**: スプレッドシート連携とトリガー設定は [INSTALL.md](INSTALL.md) を参照
 
 ---
 
@@ -178,70 +111,34 @@ npm run build
 
 ### 基本ワークフロー
 
-#### 1. プロジェクト作成開始
+#### 1. Claude Codeで対話形式で作成
 
-Claude Codeで以下のコマンドを実行：
-
-```
-/gantt
-```
-
-#### 2. 対話でプロジェクト情報を入力
-
-システムが段階的に質問するので、順次回答：
-
-- **Phase 1: 基本情報収集**
-  - プロジェクトID: `PRJ001` など
-  - プロジェクト名: `新規ECサイト開発`
-  - プロジェクト目的: `個人事業` or `HRteam`
-  - プロジェクトジャンル: 開発/マーケティング/イベント企画/業務改善/汎用
-  - プロジェクト期限: `2025-06-30`
-
-- **Phase 2-4: タスク設計**
-  - タスクの追加・修正
-  - 依存関係の設定
-  - 担当者・優先度・工数の入力
-
-#### 3. 完了を宣言
-
-すべての情報入力が完了したら：
-
-```
-完了
+```bash
+claude code
+> /gantt
 ```
 
-#### 4. ファイル生成・保存
+システムが段階的に質問します：
+- プロジェクト基本情報（ID、名前、目的、期限）
+- タスク設計（タスク名、日程、担当者、依存関係）
 
-ヘルパースクリプトを実行：
+#### 2. JSONファイル生成
+
+対話完了後、「完了」と入力してから：
 
 ```bash
 npm run gantt:save
 ```
 
-**生成されるファイル**:
+これで以下が自動生成されます：
+- `outputs/{プロジェクトID}_{プロジェクト名}.json`
+- `docs/{プロジェクトID}_{プロジェクト名}.md`（対話履歴）
 
-- `outputs/{プロジェクトID}_{プロジェクト名}.json` - プロジェクトデータ（JSON）
-- `docs/{プロジェクトID}_{プロジェクト名}.md` - 対話履歴（Markdown）
+#### 3. Ganttチャート自動生成
 
-ファイルは自動的にGoogle Driveにもアップロードされます。
+Google Driveにアップロード後、**1分以内に自動的にスプレッドシートが更新されます**。
 
-#### 5. GASでGanttチャート作成
-
-**✅ 自動実行（時間トリガー方式）**:
-
-`npm run gantt:save` でJSONファイルをGoogle Driveにアップロード後、**1分以内に自動的にGanttチャートが生成されます**。
-
-**動作フロー**:
-1. Node.jsがJSONファイルをGoogle Driveにアップロード
-2. GAS側の時間トリガー（1分ごと）がフォルダをチェック
-3. 未処理のJSONファイルを検出したら自動的に処理
-4. 処理済みファイル名を `processed_XXXX.json` に変更
-5. Discord通知が送信される（設定している場合）
-
-**手動実行の場合**:
-1. スプレッドシートを開く
-2. メニュー「Ganttチャート」→「実際のJSONから生成」
-3. または、Apps Scriptエディタで`generateFromDriveFile()`関数を実行
+> **📝 詳細**: GASトリガー設定、手動実行方法は [INSTALL.md](INSTALL.md) を参照
 
 ---
 
@@ -320,241 +217,37 @@ npm run gantt:save
 
 ## 🔗 GAS統合
 
-> **📚 詳細な導入手順**: [gas/README.md](gas/README.md) を参照してください
+### 生成される5つのシート
 
-### GAS側の主な機能（✅ 実装完了）
+1. **プロジェクト一覧**: 全プロジェクトのサマリー（ステータス、進捗率）
+2. **全プロジェクトタスク**: タスクを一元管理、自動同期
+3. **期日切れタスク**: 遅延タスクの自動抽出、Discord通知連携
+4. **Todoistタスク**（オプション）: Inbox自動同期、優先度色分け
+5. **個別Ganttチャート**: プロジェクトごとのタイムライン可視化
 
-#### 1. プロジェクト一覧シート
+### 自動処理の仕組み
 
-- 全プロジェクトのサマリー表示
-- プロジェクトID、名前、目的、ジャンル、期限、進捗率
-- ステータス管理（企画中/進行中/完了/保留/中止）
+GAS側の時間トリガー（1分間隔）がGoogle Driveフォルダを監視し、新しいJSONファイルを自動処理します。
 
-#### 2. 全プロジェクトタスクシート
-
-- 全プロジェクトのタスクを一元管理
-- プロジェクトID + タスクIDでフィルタリング可能
-- 新規プロジェクト作成時に自動追加
-- onEditトリガーで自動同期
-- 手動更新ボタンあり
-
-#### 3. 期日切れタスクシート
-
-- 全プロジェクトから期日を過ぎたタスクを自動抽出
-- 期日切れ日数を表示（例: 3日遅れ）
-- プロジェクトごとにグループ化
-- Discord通知機能連携
-- 自動更新（全シート同期時）
-
-#### 4. Todoistタスクシート（オプション）
-
-- TodoistのInboxタスクを自動同期
-- 表示項目: タスクID、タスク名、説明、期日、優先度、ラベル、完了状態、Todoistリンク、最終更新日時
-- 優先度別の色分け表示（最高=赤、高=橙、中=黄）
-- 完了タスクは緑色で表示
-- クリック可能なTodoistリンク（HYPERLINK式）
-- 自動更新（トリガー設定で30分〜1時間ごと）
-
-#### 5. 個別プロジェクトGanttチャートシート
-
-- プロジェクトごとに1シート作成
-- タイムライン可視化（日単位）
-- 進捗バー表示
-- 依存関係の矢印表示
-- 列グループ化（担当者/優先度/タグ/工数は折りたたみ）
-
-### GASトリガー設定
-
-- **時間ベーストリガー** ✅: 1分ごとにGoogle Driveフォルダをチェックし、未処理JSONファイルを自動処理
-- **手動実行** ✅: `testGenerateGantt` または `generateFromDriveFile` 関数で即座にGanttチャート生成
-- **onOpenトリガー** ✅: スプレッドシート起動時のカスタムメニュー追加
-- **onEditトリガー** 🔲: シート編集時の自動同期（今後実装予定）
-
-**時間トリガーの動作**:
-- 関数: `checkForNewJsonFiles`
-- 間隔: 1分おき
-- 処理: 未処理のJSONファイル（`processed_` で始まらないファイル）を検出して自動処理
-- 処理後: ファイル名を `processed_XXXX.json` に変更
-
-### clasp を使った自動デプロイ（オプション）
-
-手動でApps Scriptエディタにコードをコピーする代わりに、claspを使ってコマンドラインから自動デプロイできます。
-
-#### 1. claspのインストール
-
-```bash
-npm install -g @google/clasp
-```
-
-#### 2. Google認証
-
-```bash
-clasp login
-```
-
-ブラウザが開くので、Googleアカウントでログインして認証します。
-
-#### 3. 新規GASプロジェクト作成
-
-```bash
-# スプレッドシート紐付け型のプロジェクトを作成
-clasp create --title "Gantt Chart Generator" --type sheets
-```
-
-または、既存のGASプロジェクトを使用する場合:
-
-```bash
-# Apps Scriptエディタで「プロジェクトの設定」からスクリプトIDを取得
-clasp clone <スクリプトID>
-```
-
-#### 4. .clasp.json 設定
-
-プロジェクトルートに`.clasp.json`を作成:
-
-```json
-{
-  "scriptId": "your-script-id-here",
-  "rootDir": "./gas"
-}
-```
-
-**注意**: `.clasp.json`はスクリプトIDを含むため、`.gitignore`で除外されています。
-
-#### 5. コードをプッシュ
-
-```bash
-# gas/ディレクトリ内のコードをGASプロジェクトにアップロード
-clasp push
-```
-
-#### 6. ブラウザで開く
-
-```bash
-# Apps Scriptエディタをブラウザで開く
-clasp open
-```
-
-#### 7. トリガー設定
-
-claspでコードをプッシュした後、Apps Scriptエディタで時間トリガーを設定してください（上記の「GASトリガー設定」を参照）。
-
-#### clasp コマンド一覧
-
-```bash
-clasp push          # ローカル → GASにアップロード
-clasp pull          # GAS → ローカルにダウンロード
-clasp open          # ブラウザでGASエディタを開く
-clasp logs          # 実行ログを表示
-clasp deploy        # デプロイメント作成
-```
+> **📝 詳細**: GAS導入手順、clasp自動デプロイ、トリガー設定は [INSTALL.md](INSTALL.md) および [gas/README.md](gas/README.md) を参照
 
 ---
 
-## 🛠️ トラブルシューティング
+## 🛠️ よくある質問
 
-### Q1. `npm install` でエラーが発生する
+### Q1. JSONファイルが生成されない
 
-**A**: Node.jsのバージョンを確認してください。推奨: Node.js 20.x 以上
+**A**: `npm run build` → `npm run gantt:save` を実行してください。
 
-```bash
-node --version  # v20.x.x 以上を確認
-```
+### Q2. Google認証エラーが発生する
 
-### Q2. Google認証がうまくいかない
+**A**: `.env`ファイルのクライアントID/シークレット、リダイレクトURIを確認してください。
 
-**A**: 以下を確認：
+### Q3. Ganttチャートが自動生成されない
 
-1. `.env` ファイルのクライアントID・シークレットが正しいか
-2. Google Drive APIが有効化されているか
-3. リダイレクトURIが正確に設定されているか (`http://localhost:3000/oauth2callback`)
+**A**: GAS側の時間トリガー設定と`Config.gs`のフォルダIDを確認してください。
 
-### Q3. JSONファイルが生成されない
-
-**A**: 以下を確認：
-
-1. `npm run gantt:save` を実行したか
-2. TypeScriptがビルドされているか (`npm run build`)
-3. ヘルパースクリプトでエラーが出ていないか
-
-### Q4. Google Driveアップロードがスキップされる
-
-**A**: 以下を確認：
-
-1. `.env` に `GOOGLE_DRIVE_FOLDER_ID` が設定されているか
-2. `.google-token.json` が存在するか（初回認証が完了しているか）
-
-### Q5. Ganttチャートが自動生成されない
-
-**A**: 以下を確認：
-
-1. **時間トリガーが正しく設定されているか**:
-   - Apps Scriptエディタで「トリガー」アイコン（⏰）をクリック
-   - `checkForNewJsonFiles` 関数のトリガーが「1分おき」で設定されているか確認
-
-2. **Config.gsのDRIVE_FOLDER_IDが正しく設定されているか**:
-   - `.env`のGOOGLE_DRIVE_FOLDER_IDと同じ値が設定されているか確認
-
-3. **JSONファイルが正しいフォルダにアップロードされているか**:
-   - Google Driveで該当フォルダを開き、JSONファイルが存在するか確認
-
-4. **GASの実行ログを確認**:
-   - Apps Scriptエディタで「実行ログ」を開く
-   - `checkForNewJsonFiles` の実行ログを確認
-   - エラーメッセージがあれば内容を確認
-
-### Q6. 処理済みファイルが増えすぎた場合
-
-**A**: 処理済みファイル（`processed_` で始まるファイル）は手動で削除またはアーカイブできます：
-
-1. Google Driveで該当フォルダを開く
-2. `processed_` で始まるファイルを選択
-3. 別のフォルダに移動するか削除する
-
-### Q7. 特定のJSONファイルだけ処理したい
-
-**A**: 手動実行を使用してください：
-
-1. Google DriveでJSONファイルを右クリック → 「リンクを取得」
-2. URLからファイルIDを取得（`/d/` と `/view` の間の文字列）
-3. Apps Scriptエディタで `Code.gs` を開く
-4. `processJsonFile('ファイルID')` を直接実行
-
-### Q8. Todoistタスクが同期されない
-
-**A**: 以下を確認：
-
-1. **Config.gsのTODOIST_API_KEYが正しく設定されているか**:
-   - [Todoist設定](https://todoist.com/app/settings/integrations/developer) でAPIトークンを確認
-   - Config.gsに正しく貼り付けられているか確認
-
-2. **トリガーが正しく設定されているか**:
-   - Apps Scriptエディタで「トリガー」アイコン（⏰）をクリック
-   - `syncTodoistTasks` 関数のトリガーが存在するか確認
-
-3. **手動実行でテスト**:
-   - Apps Scriptエディタで `testTodoistIntegration()` 関数を実行
-   - 実行ログでエラーメッセージを確認
-
-4. **Inboxプロジェクトが存在するか**:
-   - Todoistアプリで「Inbox」プロジェクトが存在するか確認
-   - プロジェクト名が正確に「Inbox」であることを確認（大文字小文字区別）
-
-### Q9. 期日切れタスク通知が送信されない
-
-**A**: 以下を確認：
-
-1. **Discord Webhook URLが正しく設定されているか**:
-   - Config.gsのDISCORD_WEBHOOK_URLが正しいか確認
-
-2. **期日切れタスクが存在するか**:
-   - 「期日切れタスク」シートを開いて実際に期日切れタスクが存在するか確認
-
-3. **トリガーが正しく設定されているか**:
-   - `sendOverdueTasksNotification` 関数の日タイマーが設定されているか確認
-
-4. **手動実行でテスト**:
-   - `testOverdueTasksFeature()` 関数を実行してDiscord通知をテスト
+> **📝 詳しいトラブルシューティング**: [INSTALL.md](INSTALL.md) を参照
 
 ---
 
