@@ -376,6 +376,79 @@ npm run gantt:save
 - 処理: 未処理のJSONファイル（`processed_` で始まらないファイル）を検出して自動処理
 - 処理後: ファイル名を `processed_XXXX.json` に変更
 
+### clasp を使った自動デプロイ（オプション）
+
+手動でApps Scriptエディタにコードをコピーする代わりに、claspを使ってコマンドラインから自動デプロイできます。
+
+#### 1. claspのインストール
+
+```bash
+npm install -g @google/clasp
+```
+
+#### 2. Google認証
+
+```bash
+clasp login
+```
+
+ブラウザが開くので、Googleアカウントでログインして認証します。
+
+#### 3. 新規GASプロジェクト作成
+
+```bash
+# スプレッドシート紐付け型のプロジェクトを作成
+clasp create --title "Gantt Chart Generator" --type sheets
+```
+
+または、既存のGASプロジェクトを使用する場合:
+
+```bash
+# Apps Scriptエディタで「プロジェクトの設定」からスクリプトIDを取得
+clasp clone <スクリプトID>
+```
+
+#### 4. .clasp.json 設定
+
+プロジェクトルートに`.clasp.json`を作成:
+
+```json
+{
+  "scriptId": "your-script-id-here",
+  "rootDir": "./gas"
+}
+```
+
+**注意**: `.clasp.json`はスクリプトIDを含むため、`.gitignore`で除外されています。
+
+#### 5. コードをプッシュ
+
+```bash
+# gas/ディレクトリ内のコードをGASプロジェクトにアップロード
+clasp push
+```
+
+#### 6. ブラウザで開く
+
+```bash
+# Apps Scriptエディタをブラウザで開く
+clasp open
+```
+
+#### 7. トリガー設定
+
+claspでコードをプッシュした後、Apps Scriptエディタで時間トリガーを設定してください（上記の「GASトリガー設定」を参照）。
+
+#### clasp コマンド一覧
+
+```bash
+clasp push          # ローカル → GASにアップロード
+clasp pull          # GAS → ローカルにダウンロード
+clasp open          # ブラウザでGASエディタを開く
+clasp logs          # 実行ログを表示
+clasp deploy        # デプロイメント作成
+```
+
 ---
 
 ## 🛠️ トラブルシューティング
